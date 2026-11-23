@@ -1,0 +1,51 @@
+# Retrieval benchmark (eval/retrieval_bench.py). `expect` lists the chunk ids that correctly answer the query.
+# keyword:    the query uses the documents' own terms
+# paraphrase: the query says the same thing in a customer's words, with little word overlap
+# off_topic:  nothing in the documents answers it; the retriever should not be confident
+
+keyword:
+  - {q: "stop-out margin level 50%", expect: ["02_margin_and_leverage#2"]}
+  - {q: "EUR/USD maximum leverage 1:30", expect: ["02_margin_and_leverage#0"]}
+  - {q: "Raw account commission per lot", expect: ["01_fees_and_charges#0", "08_account_types#0"]}
+  - {q: "Islamic swap-free account administration fee", expect: ["08_account_types#0"]}
+  - {q: "inactivity fee after 12 months", expect: ["01_fees_and_charges#5"]}
+  - {q: "currency conversion fee", expect: ["01_fees_and_charges#4"]}
+  - {q: "Tier 3 source of funds documents", expect: ["03_kyc_and_verification#4", "03_kyc_and_verification#0"]}
+  - {q: "14:00 withdrawal cut-off", expect: ["04_deposits_and_withdrawals#1"]}
+  - {q: "return-to-source rule", expect: ["04_deposits_and_withdrawals#2"]}
+  - {q: "refer complaint to ombudsman", expect: ["05_complaints_policy#3"]}
+  - {q: "escalate to Head of Compliance", expect: ["05_complaints_policy#2"]}
+  - {q: "negative balance protection", expect: ["02_margin_and_leverage#3"]}
+  - {q: "proof of address utility bill", expect: ["03_kyc_and_verification#1"]}
+  - {q: "swap charged three times on Wednesday", expect: ["01_fees_and_charges#1"]}
+  - {q: "cryptocurrency CFD maintenance window", expect: ["07_platform_and_support#1"]}
+
+paraphrase:
+  - {q: "Can I end up owing you money if the market jumps?", expect: ["02_margin_and_leverage#3"]}
+  - {q: "If I ask to take my money out in the afternoon, when do I get it?", expect: ["04_deposits_and_withdrawals#1"]}
+  - {q: "Can I send my profits to my brother's bank account?", expect: ["04_deposits_and_withdrawals#2"]}
+  - {q: "Why did you reject my passport photo?", expect: ["03_kyc_and_verification#3"]}
+  - {q: "How much do I pay to keep a trade open overnight?", expect: ["01_fees_and_charges#1"]}
+  - {q: "My trades got closed automatically, why?", expect: ["02_margin_and_leverage#2"]}
+  - {q: "What happens if I don't use my account for a year?", expect: ["01_fees_and_charges#5"]}
+  - {q: "Is there a cost to put money in with my card?", expect: ["01_fees_and_charges#2"]}
+  - {q: "How quickly does money show up if I pay by card?", expect: ["04_deposits_and_withdrawals#0"]}
+  - {q: "Can I stop a payout I just asked for?", expect: ["04_deposits_and_withdrawals#4"]}
+  - {q: "The app was down for an hour, do I get compensated?", expect: ["07_platform_and_support#3"]}
+  - {q: "Can I practise without real money?", expect: ["06_risk_disclosure#2", "08_account_types#2"]}
+  - {q: "I'm not happy with how you handled my complaint", expect: ["05_complaints_policy#2", "05_complaints_policy#3"]}
+  - {q: "How much do I need to start trading?", expect: ["04_deposits_and_withdrawals#0", "08_account_types#0"]}
+  - {q: "Can I switch my account from dollars to euros?", expect: ["08_account_types#1"]}
+  - {q: "When can I talk to someone on live chat?", expect: ["07_platform_and_support#2"]}
+  - {q: "How much do I need to put up to open one lot of EUR/USD?", expect: ["02_margin_and_leverage#1"]}
+  - {q: "Do most people lose money doing this?", expect: ["06_risk_disclosure#0"]}
+  - {q: "Can I take out more than my usual daily amount?", expect: ["04_deposits_and_withdrawals#3"]}
+  - {q: "I want to leave Aurelia for good", expect: ["04_deposits_and_withdrawals#5"]}
+
+off_topic:
+  - {q: "What's the weather in Dubai today?"}
+  - {q: "Write me a poem about cats"}
+  - {q: "Do you offer copy trading?"}
+  - {q: "What is the spread on Tesla shares?"}
+  - {q: "Who won the football match yesterday?"}
+  - {q: "How do I reset my Netflix password?"}

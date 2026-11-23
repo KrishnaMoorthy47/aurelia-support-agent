@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      LLM_PROVIDER: offline   # no API keys in CI: the rule-based stand-in exercises every code path
+      EMBEDDER: lexical
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Unit and integration tests
+        run: pytest
+      - name: Eval harness smoke run (offline, plumbing only)
+        run: python eval/run_eval.py --offline --only human_in_loop && python eval/run_eval.py --offline --only injection && python eval/run_eval.py --offline --only advice
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t aurelia-support-agent .
+      - name: Start container and check /health
+        run: |
+          docker run -d --name app -p 7860:7860 -e LLM_PROVIDER=offline aurelia-support-agent
+          for i in $(seq 1 30); do curl -fs localhost:7860/health && exit 0; sleep 2; done
+          docker logs app; exit 1
