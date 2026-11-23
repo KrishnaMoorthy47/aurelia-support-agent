@@ -2,6 +2,8 @@
 
 Customer-support agent for a fictional CFD broker. It answers policy questions from the broker's documents with citations, reads the signed-in customer's account through an MCP server, refuses investment advice, and holds account changes for human approval.
 
+**Live demo:** https://aurelia-support-agent.onrender.com (free instance; the first request after idling takes about a minute)
+
 All company data is invented. Nothing here is financial advice.
 
 **Stack:** LangGraph · Groq · Supabase pgvector · fastembed · MCP · FastAPI · Docker
