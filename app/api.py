@@ -31,6 +31,7 @@ from app.llm import get_llm
 from app.mcp_server import db as mock_db
 from app.mcp_server.db import SEED_CUSTOMERS
 from app.rag.ingest import build_retriever
+from app.rag.stores import MemoryStore
 from app.tools import McpToolGateway
 
 log = logging.getLogger("aurelia.api")
@@ -109,7 +110,13 @@ def create_app(*, llm=None, retriever=None, mock_db_path: str | None = None) -> 
         s = get_settings()
         async with AsyncExitStack() as stack:
             the_llm = llm or get_llm()
-            the_retriever = retriever or build_retriever()
+            app.state.warnings = []
+            try:
+                the_retriever = retriever or await asyncio.to_thread(build_retriever)
+            except Exception as exc:
+                log.error("vector store unavailable (%s); using in-memory vectors", type(exc).__name__)
+                app.state.warnings.append(f"vector store unavailable ({type(exc).__name__}); using in-memory vectors")
+                the_retriever = await asyncio.to_thread(build_retriever, MemoryStore())
             gateway = await stack.enter_async_context(McpToolGateway(mock_db_path))
 
             http = httpx.AsyncClient(timeout=3.0)
@@ -126,7 +133,12 @@ def create_app(*, llm=None, retriever=None, mock_db_path: str | None = None) -> 
             app.state.limiter = RateLimiter(s.rate_limit_per_minute)
             app.state.daily_cap = DailyCap(s.demo_daily_cap)
             app.state.mock_db_path = mock_db_path or s.mock_db_path
-            sink = await asyncio.to_thread(make_sink, s.audit_log, s.database_url)
+            try:
+                sink = await asyncio.to_thread(make_sink, s.audit_log, s.database_url)
+            except Exception as exc:
+                log.error("request log unavailable (%s)", type(exc).__name__)
+                app.state.warnings.append(f"request log unavailable ({type(exc).__name__})")
+                sink = None
             app.state.audit = AuditWriter(sink)
             yield
             await app.state.audit.drain()
@@ -190,7 +202,9 @@ def create_app(*, llm=None, retriever=None, mock_db_path: str | None = None) -> 
             "status": "ok",
             "llm": request.app.state.llm.name,
             "embedder": request.app.state.retriever.embedder.name,
-            "vector_store": s.vector_store,
+            "vector_store": "pgvector" if type(request.app.state.retriever.store).__name__ == "PgVectorStore" else "memory",
+            "request_log": type(request.app.state.audit.sink).__name__ if request.app.state.audit.sink else "off",
+            "warnings": request.app.state.warnings,
             "checkpointer": s.checkpointer,
             "model_visible_tools": [t["function"]["name"] for t in request.app.state.gateway.model_tool_specs],
             "reviewer_key_required": bool(s.reviewer_key),

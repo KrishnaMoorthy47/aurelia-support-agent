@@ -49,6 +49,23 @@ class MemoryStore:
         return [(ids[i], float(sims[i])) for i in order]
 
 
+def open_pool(dsn: str, max_size: int):
+    """Connection pool that fails fast on bad credentials.
+
+    One direct connection attempt first: a pool would keep retrying a wrong password in the background,
+    and Supabase's pooler blocks the client after repeated authentication failures.
+    prepare_threshold=None: Supabase's transaction pooler rejects prepared statements.
+    """
+    import psycopg
+    from psycopg_pool import ConnectionPool
+
+    psycopg.connect(dsn, connect_timeout=10, prepare_threshold=None).close()
+    return ConnectionPool(
+        dsn, min_size=1, max_size=max_size, open=True, check=ConnectionPool.check_connection,
+        kwargs={"prepare_threshold": None, "autocommit": True},
+    )
+
+
 def _vec_literal(v: np.ndarray) -> str:
     return "[" + ",".join(f"{x:.6f}" for x in v.tolist()) + "]"
 
@@ -62,14 +79,8 @@ class PgVectorStore:
     """
 
     def __init__(self, dsn: str, ensure_schema: bool = True) -> None:
-        from psycopg_pool import ConnectionPool
-
-        # A small pool keeps connections open: a fresh TLS connection to a remote database costs ~1-2s per query.
-        # prepare_threshold=None: Supabase's transaction pooler rejects prepared statements.
-        self._pool = ConnectionPool(
-            dsn, min_size=1, max_size=4, open=True, check=ConnectionPool.check_connection,
-            kwargs={"prepare_threshold": None, "autocommit": True},
-        )
+        # A pool keeps connections open: a fresh TLS connection to a remote database costs ~1-2s per query.
+        self._pool = open_pool(dsn, max_size=4)
         if ensure_schema:
             self.ensure_schema()
 

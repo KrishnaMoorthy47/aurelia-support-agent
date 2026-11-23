@@ -7,7 +7,7 @@ import logging
 from collections import deque
 from typing import Any
 
-from app.rag.stores import SCHEMA_SQL
+from app.rag.stores import SCHEMA_SQL, open_pool
 
 log = logging.getLogger("aurelia.audit")
 
@@ -40,12 +40,7 @@ class MemoryAuditLog:
 
 class PostgresAuditLog:
     def __init__(self, dsn: str) -> None:
-        from psycopg_pool import ConnectionPool
-
-        self._pool = ConnectionPool(
-            dsn, min_size=1, max_size=2, open=True, check=ConnectionPool.check_connection,
-            kwargs={"prepare_threshold": None, "autocommit": True},
-        )
+        self._pool = open_pool(dsn, max_size=2)
         with self._pool.connection() as c:
             c.execute(SCHEMA_SQL.read_text(encoding="utf-8"))
 

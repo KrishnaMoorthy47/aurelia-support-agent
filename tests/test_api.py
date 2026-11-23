@@ -148,3 +148,22 @@ def test_decision_is_audited_against_the_session(client):
     client.post("/approvals/aud4/decision", json={"approved": True, "reviewer": "r1"})
     rec = _audit(client)[-1]
     assert rec["path"] == "/approvals/aud4/decision" and rec["session_id"] == "aud4" and rec["request"]["reviewer"] == "r1"
+
+
+def test_bad_database_url_degrades_instead_of_crashing(monkeypatch, mock_db):
+    monkeypatch.setenv("VECTOR_STORE", "pgvector")
+    monkeypatch.setenv("AUDIT_LOG", "postgres")
+    monkeypatch.setenv("EMBEDDER", "lexical")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody:wrong@127.0.0.1:1/none")
+    from app.config import get_settings
+    from app.rag.embedders import set_embedder
+    get_settings.cache_clear()
+    set_embedder(None)
+    try:
+        with TestClient(create_app(llm=OfflineLLM(), mock_db_path=mock_db)) as c:
+            h = c.get("/health").json()
+            assert h["vector_store"] == "memory" and h["request_log"] == "off" and len(h["warnings"]) == 2
+            assert c.post("/chat", json={"session_id": "deg", "message": "What is the withdrawal fee?"}).json()["status"] == "done"
+    finally:
+        get_settings.cache_clear()
+        set_embedder(None)
