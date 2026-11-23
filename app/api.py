@@ -36,6 +36,12 @@ from app.tools import McpToolGateway
 
 log = logging.getLogger("aurelia.api")
 
+
+def _reason(exc: Exception) -> str:
+    """Last line of a database error (e.g. 'FATAL: password authentication failed'); never includes the DSN."""
+    lines = [l.strip() for l in str(exc).splitlines() if l.strip()]
+    return f"{type(exc).__name__}: {lines[-1][:200] if lines else ''}"
+
 STATIC_DIR = Path(__file__).parent / "static"
 EVAL_REPORT = Path(__file__).resolve().parents[1] / "eval" / "report.json"
 
@@ -114,8 +120,8 @@ def create_app(*, llm=None, retriever=None, mock_db_path: str | None = None) -> 
             try:
                 the_retriever = retriever or await asyncio.to_thread(build_retriever)
             except Exception as exc:
-                log.error("vector store unavailable (%s); using in-memory vectors", type(exc).__name__)
-                app.state.warnings.append(f"vector store unavailable ({type(exc).__name__}); using in-memory vectors")
+                log.error("vector store unavailable (%s); using in-memory vectors", _reason(exc))
+                app.state.warnings.append(f"vector store unavailable ({_reason(exc)}); using in-memory vectors")
                 the_retriever = await asyncio.to_thread(build_retriever, MemoryStore())
             gateway = await stack.enter_async_context(McpToolGateway(mock_db_path))
 
@@ -136,8 +142,8 @@ def create_app(*, llm=None, retriever=None, mock_db_path: str | None = None) -> 
             try:
                 sink = await asyncio.to_thread(make_sink, s.audit_log, s.database_url)
             except Exception as exc:
-                log.error("request log unavailable (%s)", type(exc).__name__)
-                app.state.warnings.append(f"request log unavailable ({type(exc).__name__})")
+                log.error("request log unavailable (%s)", _reason(exc))
+                app.state.warnings.append(f"request log unavailable ({_reason(exc)})")
                 sink = None
             app.state.audit = AuditWriter(sink)
             yield
