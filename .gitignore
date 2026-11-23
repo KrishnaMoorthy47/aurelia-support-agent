@@ -5,3 +5,8 @@ __pycache__/
 data/*.db
 .pytest_cache/
 eval/report.scratch.*
+
+# Markdown: only the README and the knowledge-base documents are part of the repo
+*.md
+!README.md
+!app/kb/docs/*.md

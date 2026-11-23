@@ -1,130 +1,121 @@
 # Aurelia Support Agent
 
-A customer-support agent for a fictional CFD broker, "Aurelia Markets". It answers policy questions from the broker's documents with citations, looks up the signed-in customer's account through an MCP server, refuses investment advice, and sends anything that changes an account to a human reviewer.
+Customer-support agent for a fictional CFD broker. It answers policy questions from the broker's documents with citations, reads the signed-in customer's account through an MCP server, refuses investment advice, and holds account changes for human approval.
 
 All company data is invented. Nothing here is financial advice.
 
-**Stack:** LangGraph · Groq (`qwen3.8-27b` for routing and review, `gpt-oss-120b` for answers) · Supabase pgvector · fastembed (`bge-small-en-v1.5`) · MCP Python SDK · FastAPI · Docker
+**Stack:** LangGraph · Groq · Supabase pgvector · fastembed · MCP · FastAPI · Docker
 
-## What it does
+## Features
 
-| Customer says | What happens |
+| Request | Behaviour |
 |---|---|
-| "What's the withdrawal fee?" | Multi-query hybrid retrieval over the policy documents; the answer cites its sources, or says the documents don't cover it |
-| "Why is my verification still pending?" | The model picks read-only tools that run on an MCP server; the customer id comes from the session, not the model |
-| "Should I buy gold?" | Refused by a deterministic rule, with the risk disclosure cited |
-| "Ignore previous instructions…" | Blocked before any model sees it |
-| "I want to complain…" | Logged as a ticket immediately, and a webhook fires |
-| "Raise my withdrawal limit to 5000" | Collects amount and reason → policy check → waits for a reviewer → applied over MCP (the server also refuses without a reviewer id) |
-
-Every reply goes through a critic: deterministic rules plus a small-model check that sees the same evidence the reply was written from. A failing draft gets one rewrite, then a safe fallback.
+| Policy question ("What's the withdrawal fee?") | Retrieval over the policy documents; cited answer, or "not covered" |
+| Own account ("Why is my verification pending?") | Read-only MCP tools; customer id comes from the session, not the model |
+| Investment advice ("Should I buy gold?") | Refused by rule |
+| Prompt injection | Blocked before any model call |
+| Complaint | Ticket logged immediately; webhook fired |
+| Limit increase / account closure | Details collected → policy check → reviewer approval → applied over MCP |
 
 ## Architecture
 
 ```
-message → input guard → router (rules + LLM; also rewrites the question for search)
-            ├─ faq ─────────► multi-query hybrid RAG → grounded answer with citations
-            ├─ account ─────► MCP tools (read-only)
-            ├─ complaint ───► ticket + webhook
-            ├─ limit / closure ► policy check → human approval (LangGraph interrupt) → MCP write tool
-            ├─ advice ──────► fixed refusal
-            └─ off topic ───► redirect
-        → critic ⇄ rewrite → reply + step-by-step trace
+                         ┌──────────────┐
+   message ──► guard ──► │    router    │  rules + LLM, also rewrites the query for search
+                         └──────┬───────┘
+      ┌──────────┬──────────┬───┴──────┬────────────────┬──────────┐
+      ▼          ▼          ▼          ▼                ▼          ▼
+     faq      account   complaint   limit / closure   advice   off-topic
+   (RAG)    (MCP read)  (ticket)    policy check     (refuse)  (redirect)
+      │          │          │          ▼                │          │
+      │          │          │    human approval         │          │
+      │          │          │    (MCP write)            │          │
+      └──────────┴──────────┴──────────┼────────────────┴──────────┘
+                                       ▼
+                         critic ⇄ rewrite ──► reply + trace
 ```
 
-Safety-critical decisions (injection, advice, whose account is visible, who approves what) are plain code. The model writes text.
+- Safety decisions (injection, advice, account access, approvals) are plain code; the model only writes text.
+- The critic checks every reply with rules and a small model that sees the same evidence the reply was written from. A failing draft gets one rewrite, then a safe fallback.
+- Models: `qwen/qwen3.8-27b` for routing and review, `openai/gpt-oss-120b` for answers. Switching to Claude or OpenAI is a config change (`LLM_PROVIDER`).
 
 ## Retrieval
 
-- **Chunking:** one chunk per `##` section (37 chunks, 20–75 words), each prefixed with its document title so it can be cited.
-- **Query rewriting:** the router call that classifies the message also returns `search_query`, the question restated in the documents' vocabulary ("I want to leave Aurelia for good" → "account closure"). This adds no extra model calls.
-- **Fusion:** Reciprocal Rank Fusion over three lists: vector search on the original question, vector search on the rewrite, and BM25 on the rewrite.
-- **Gate:** the answer step only runs if the best cosine similarity is at least 0.55. In-domain questions score 0.60 or more; unrelated ones score 0.42–0.52.
+- One chunk per document section (37 chunks), embedded with `BAAI/bge-small-en-v1.5` (384-dim, local ONNX via fastembed) and stored in pgvector.
+- The router also returns `search_query`, the question in the documents' vocabulary. This costs no extra call.
+- Reciprocal Rank Fusion over vector search on the original question, vector search on the rewrite, and BM25 on the rewrite.
+- The answer step runs only if the best cosine similarity is at least 0.55.
 
-`eval/retrieval_bench.py` compares the options on 35 labelled questions (15 using the documents' wording, 20 paraphrased in a customer's words):
+Benchmark (`eval/retrieval_bench.py`, 35 labelled questions):
 
 | Strategy | Keyword hit@3 | Paraphrase hit@1 | Paraphrase hit@3 |
 |---|---|---|---|
 | BM25 | 100% | 30% | 50% |
 | Vector | 100% | 55% | 75% |
-| Vector + BM25 with RRF (no rewrite) | 100% | 50% | 65% |
-| Vector on the rewrite | 100% | 95% | 95% |
+| Vector + BM25 (RRF) | 100% | 50% | 65% |
 | **Multi-query RRF (used)** | **100%** | **85%** | **100%** |
 
-Plain hybrid search was *worse* than vectors alone on paraphrases, because BM25 on a customer's wording matches incidental words. BM25 becomes useful once it runs on the rewritten query, and fusing it with the original question protects against a bad rewrite.
+BM25 on a customer's own wording adds noise; on the rewritten query it adds precision.
 
 ## Evaluation
 
-`eval/run_eval.py` runs 49 scripted conversations (56 turns) through the real graph and scores routing, required facts, citations, compliance (on every turn), the approval flow, latency and token use.
+`eval/run_eval.py` runs 49 scripted conversations through the graph and scores routing, facts, citations, compliance, the approval flow, latency and tokens.
 
-| Run | Passed | Notes |
-|---|---|---|
-| First run on Groq | 34 / 49 | gpt-oss's citation format dropped sources; the critic couldn't see its evidence and rejected correct account answers |
-| After grounding the critic and normalising citations | 49 / 49 | |
-| On Supabase pgvector, multi-query retrieval | 49 / 49 | 0 compliance violations, median 1.2 s per message, about 1.7 model calls per message |
+| Run | Passed |
+|---|---|
+| Initial | 34 / 49 |
+| Critic grounded on evidence, citation format fixed | 49 / 49 |
+| Supabase + multi-query retrieval | 49 / 49, 0 compliance violations, ~1.2 s median |
 
-Run histories are in `eval/runs/`. These cases were written alongside the system, so they work as a regression suite rather than an independent benchmark.
-
-## Run it
+## Run locally
 
 ```bash
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env                                    # add GROQ_API_KEY (free at console.groq.com)
-uvicorn app.api:app --reload                            # http://localhost:8000
+cp .env.example .env                                   # set GROQ_API_KEY and DATABASE_URL
+uvicorn app.api:app --reload                           # http://localhost:8000
 ```
 
-Without `GROQ_API_KEY` it runs in offline mode with a rule-based stand-in for the model. Set `EMBEDDER=lexical` to skip the 130 MB embedding model download.
+Without `GROQ_API_KEY` it runs offline with a rule-based model stand-in. Without `DATABASE_URL` it uses in-memory vectors and no request log.
 
-Demo customers: `C-1001` (verified, has open positions), `C-1002` (proof of address missing), `C-1003` (restricted), `C-1004` (Tier 1, use for limit requests).
+Demo customers: `C-1001` verified with open positions · `C-1002` proof of address missing · `C-1003` restricted · `C-1004` Tier 1.
 
-### Supabase
+## Supabase
 
-1. Create a free project and copy the **Session pooler** connection string (Connect → Direct).
-2. Set `DATABASE_URL=…` and `VECTOR_STORE=pgvector` in `.env`.
+Set `DATABASE_URL` to the project's **Session pooler** connection string and `VECTOR_STORE=pgvector`. On startup the app applies `supabase/schema.sql` (idempotent) and embeds the documents if the table is empty.
 
-The tables, indexes and `vector` extension are created on first start (`supabase/schema.sql`, all `if not exists`), and the documents are embedded automatically if the table is empty. Free projects pause after a week without activity.
+| Table | Contents |
+|---|---|
+| `kb_chunks` | document chunks and embeddings |
+| `api_logs` | every POST and error response: timestamp, request id, latency, session, route, request and response bodies |
 
-### Request log
-
-With `DATABASE_URL` set, every POST (chat messages, reviewer decisions, resets) and every error response is written to the `api_logs` table: timestamp, request id (also returned as the `X-Request-ID` header), path, status, latency, session, customer, route, and the full request and response bodies including the agent's step trace. Headers are never stored. Writes happen in the background, so a logging failure never affects the reply. The UI's polling GETs aren't logged.
-
-```sql
-select created_at, route, request->>'message' as message, response->>'reply' as reply, latency_ms
-from api_logs order by created_at desc limit 20;
-```
+Both tables have RLS enabled with no policies, so only the app's database role can access them.
 
 ## Tests
 
 ```bash
-pytest                                  # 97 tests, offline, no keys needed
-python eval/run_eval.py                 # full conversation eval against Groq
-python eval/retrieval_bench.py --rewrite
+pytest                                     # 97 tests, offline
+python eval/run_eval.py                    # conversation eval (uses Groq)
+python eval/retrieval_bench.py --rewrite   # retrieval benchmark
 ```
 
-The tests cover the guardrails, retrieval, the MCP server and its guards, every graph path (approval, decline, rewrite, fallback, a misbehaving model), and the API. CI runs them on every push and builds the Docker image.
-
-## Notes
-
-- Groq's free tier allows 1,000 requests a day and 8,000 tokens a minute per model, and rejects requests that could produce more than about 1,000 output tokens a minute, so output is capped (`FAST_MAX_TOKENS`, `STRONG_MAX_TOKENS`). `DEMO_DAILY_CAP` limits total messages a day.
-- Switching to Claude or OpenAI is `LLM_PROVIDER=anthropic|openai` plus the matching LangChain package. This hasn't been run, since neither has a free tier.
-- Approval state is kept in memory. `CHECKPOINTER=postgres` persists paused conversations on Linux (async psycopg and the MCP subprocess need different event loops on Windows).
+CI runs the tests and builds the Docker image on every push.
 
 ## Layout
 
 ```
 app/
-  api.py           FastAPI: /chat, /approvals, /sessions, /eval/report, /demo/reset, /health
-  agents/          LangGraph graph and prompts
-  rag/             chunking, embedders, vector stores, retriever, ingest
-  mcp_server/      MCP server and mock back-office data
-  tools.py         MCP client gateway
-  audit.py         request/response log (Supabase api_logs)
-  rules.py         guardrails and routing floor
-  llm.py           model backends
-  static/          demo page
-  kb/docs/         the fictional broker's documents
-eval/              conversation eval, retrieval benchmark, run history
-supabase/          pgvector schema
+  api.py          FastAPI endpoints and request logging middleware
+  agents/         LangGraph graph and prompts
+  rag/            chunking, embeddings, vector stores, retriever
+  mcp_server/     MCP server and mock back-office data
+  tools.py        MCP client gateway
+  rules.py        guardrails and routing rules
+  audit.py        request log
+  llm.py          model backends
+  static/         demo UI
+  kb/docs/        knowledge base
+eval/             conversation eval, retrieval benchmark, results
+supabase/         database schema
 tests/
 ```
