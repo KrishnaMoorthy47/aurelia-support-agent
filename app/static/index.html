@@ -192,7 +192,7 @@
 
 <nav class="tabs" role="tablist">
   <button role="tab" data-go="chat" aria-selected="true">Chat</button>
-  <button role="tab" data-go="agent" aria-selected="false">What the agent did</button>
+  <button role="tab" data-go="agent" aria-selected="false">Behind the scenes</button>
   <button role="tab" data-go="desk" aria-selected="false">Compliance desk <span id="tab-count"></span></button>
 </nav>
 
@@ -218,8 +218,8 @@
   <!-- agent internals -->
   <section class="pane" id="pane-agent">
     <header>
-      <h2>What the agent did</h2>
-      <p>The path your last message took through the LangGraph workflow.</p>
+      <h2>Behind the scenes</h2>
+      <p>How the agent handled the last message: safety checks, the route it chose, the documents it used.</p>
     </header>
     <div class="map" id="map">
       <div class="lane"><span class="node" data-n="guard">Input guard</span></div>
@@ -270,23 +270,6 @@
         <p class="empty" id="eval-body">Loading the latest evaluation run…</p>
       </section>
 
-      <section class="block">
-        <h2>How this maps to the role</h2>
-        <dl class="kv">
-          <dt>Agents</dt><dd>A LangGraph workflow with a router, specialist paths and a compliance critic, running on Groq. Switching to Claude or OpenAI is a config change.</dd>
-          <dt>RAG</dt><dd>Hybrid search (BM25 + vectors, merged with reciprocal rank fusion) over pgvector on Supabase. Answers cite their sources and say so when the documents don't cover a question.</dd>
-          <dt>MCP</dt><dd>Account tools run on an MCP server. The customer id comes from the session, never from the model.</dd>
-          <dt>Guardrails</dt><dd>Prompt-injection and advice checks run as plain code before any model sees the message. Every reply is checked for advice, price predictions and promised returns.</dd>
-          <dt>Human in the loop</dt><dd>Sensitive actions pause the graph, and the MCP server refuses to apply them without a reviewer id.</dd>
-          <dt>Evaluation</dt><dd>Scripted conversations scored on routing, facts, citations, compliance, latency and tokens.</dd>
-          <dt>Delivery</dt><dd>FastAPI, Docker, tests in CI.</dd>
-        </dl>
-      </section>
-
-      <section class="block">
-        <h2>Running on</h2>
-        <p class="runtime" id="runtime">Checking…</p>
-      </section>
     </div>
   </section>
 </main>
@@ -449,7 +432,7 @@
       case "retrieve": return ["Searched the documents",
                      (s.rewrite ? `Customer's words plus the rewrite "${s.rewrite}", vector and keyword search merged with RRF. ` : "Vector and keyword search merged with RRF. ") +
                      `Relevant: ${yes(s.confident)} (best similarity ${s.best_score}).`, s.confident ? "" : "hold", s.hits];
-      case "answer": return ["Wrote the answer", `Model ${s.model}${s.cited ? `, cited ${s.cited.length ? s.cited.map((c) => `[${c}]`).join(" ") : "nothing"}` : ""}.`];
+      case "answer": return ["Wrote the answer from the documents", s.cited ? `Cited ${s.cited.length ? s.cited.map((c) => `[${c}]`).join(" ") : "nothing"}.` : ""];
       case "tools": return ["Called account tools over MCP", `For ${s.customer}, chosen by ${s.selected_by === "llm_tool_calling" ? "model tool calling" : "rules"}: ` +
                      s.calls.map((c) => `${c.tool} ${c.ok ? "✓" : "✗ " + (c.error || "")}`).join(", ")];
       case "account": return ["Account lookup refused", "Nobody is signed in.", "bad"];
@@ -494,8 +477,7 @@
       const [title, detail, tone, hits] = describe(s);
       const hitList = hits && hits.length ? `<ul class="hits">${hits.map((h) =>
         `<li>${esc(h.source)} <span style="opacity:.75">(fused ${h.rrf}${h.vector != null ? `, vector ${h.vector}` : ""}${h.bm25_rank != null ? `, BM25 #${h.bm25_rank + 1}` : ""})</span></li>`).join("")}</ul>` : "";
-      return `<li class="${tone || ""}"><div>${esc(title)}</div>${detail ? `<div class="detail">${esc(detail)}</div>` : ""}${hitList}
-        <details><summary>Raw step</summary><pre>${esc(JSON.stringify(s, null, 2))}</pre></details></li>`;
+      return `<li class="${tone || ""}"><div>${esc(title)}</div>${detail ? `<div class="detail">${esc(detail)}</div>` : ""}${hitList}</li>`;
     }).join("");
   }
 
@@ -565,7 +547,7 @@
       const pct = Math.round((100 * s.cases_passed) / Math.max(1, s.cases));
       $("#evals").innerHTML = `<h2>Test results</h2>
         <div class="score">${s.cases_passed} of ${s.cases} conversations passed</div>
-        <p class="runtime">${pct}% on ${esc(r.meta.started)} with ${esc(r.meta.llm)}. ${s.compliance_violations} compliance violations.
+        <p class="runtime">${pct}% passed. ${s.compliance_violations} compliance violations.
         Median reply ${s.latency_p50_s}s, ${s.avg_llm_calls_per_message} model calls per message.</p>
         <table class="cats">${Object.entries(s.by_category).map(([k, v]) =>
           `<tr><td>${esc(k.replace(/_/g, " "))}</td><td>${v.passed} / ${v.total}</td></tr>`).join("")}</table>`;
@@ -576,11 +558,8 @@
   async function loadRuntime() {
     try {
       const h = await api("/health");
-      const store = h.vector_store === "pgvector" ? "Supabase pgvector" : "in-memory vectors";
-      $("#runtime").textContent = `Model ${h.llm}. Embeddings ${h.embedder} in ${store}. Approvals saved in ${h.checkpointer === "postgres" ? "Postgres" : "memory"}. ` +
-        `Tools the model can see: ${h.model_visible_tools.join(", ")}.` + (h.daily_cap ? ` ${h.messages_today} of ${h.daily_cap} demo messages used today.` : "");
       if (h.llm === "offline-rules") note("Running in offline mode (no LLM key), so answers are simple extracts. Set GROQ_API_KEY for real answers.");
-    } catch { $("#runtime").textContent = "The server isn't responding."; }
+    } catch { /* the chat shows its own error if the server is down */ }
   }
 
   $("#reset").addEventListener("click", async () => {
