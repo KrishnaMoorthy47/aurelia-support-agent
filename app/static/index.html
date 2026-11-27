@@ -78,11 +78,14 @@
   .typing { color: var(--muted); font-size: 13px; }
 
   .compose { padding: 12px 22px 18px; border-top: 1px solid var(--line); background: var(--paper); }
-  .tries { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .tries { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; max-height: 96px; overflow-y: auto; }
   .try {
     border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 4px 11px;
-    font-size: 13px; cursor: pointer; text-align: left;
+    font-size: 13px; cursor: pointer; text-align: start;
   }
+  #pane-chat[dir="rtl"] { font-family: "Segoe UI", Tahoma, var(--sans); }
+  #pane-chat[dir="rtl"] .msg.user .body { border-bottom-right-radius: 12px; border-bottom-left-radius: 3px; }
+  #pane-chat[dir="rtl"] .msg.bot .body { border-bottom-left-radius: 12px; border-bottom-right-radius: 3px; }
   .try:hover { border-color: var(--agent); }
   .try small { color: var(--muted); }
   form.send { display: flex; gap: 8px; }
@@ -183,6 +186,7 @@
   <label class="who">Signed in as
     <select id="customer" aria-label="Demo customer"></select>
   </label>
+  <button class="ghost" id="lang" type="button" aria-label="Switch chat language">عربي</button>
   <button class="ghost" id="reset" type="button">Reset demo data</button>
 </div>
 
@@ -196,7 +200,7 @@
   <!-- customer view -->
   <section class="pane" id="pane-chat">
     <header>
-      <h2>Customer chat</h2>
+      <h2 id="chat-title">Customer chat</h2>
       <p id="who-hint">Ask about fees, margin, verification or withdrawals, or about your own account.</p>
     </header>
     <div class="scroll" id="log-wrap">
@@ -307,9 +311,29 @@
     { text: "Raise my daily withdrawal limit to 5000 USD because I need to pay university fees", label: "Needs approval", as: "C-1004" },
     { text: "I want to file a complaint, my withdrawal took two weeks", label: "Complaint", as: "C-1001" },
     { text: "Can I verify with my Emirates ID? Which documents do UAE residents need?", label: "UAE" },
-    { text: "ما هي رسوم السحب؟", label: "عربي" },
-    { text: "هل أشتري الذهب الآن؟", label: "نصيحة؟" },
+    { text: "Can I fund my account with a credit card, and do you give a deposit bonus?", label: "UAE rules" },
+    { text: "Someone on WhatsApp says he's my Aurelia account manager. Is that real?", label: "Scam check" },
   ];
+  const TRIES_AR = [
+    { text: "ما هي رسوم السحب؟", label: "الرسوم" },
+    { text: "هل يمكن التوثيق باستخدام الهوية الإماراتية؟", label: "التوثيق" },
+    { text: "هل يمكنني الإيداع باستخدام بطاقة ائتمان؟", label: "قواعد الإمارات" },
+    { text: "كيف أعرف أن مدير الحساب الذي يراسلني على واتساب من أوريليا فعلاً؟", label: "احتيال" },
+    { text: "هل لديكم حساب إسلامي بدون تبييت؟", label: "حساب إسلامي" },
+    { text: "لماذا لم يتم توثيق حسابي حتى الآن؟", label: "حسابي", as: "C-1002" },
+    { text: "هل أشتري الذهب الآن؟", label: "نصيحة؟" },
+    { text: "أريد رفع حد السحب اليومي إلى 5000 دولار لدفع رسوم الجامعة", label: "يحتاج موافقة", as: "C-1004" },
+  ];
+  const UI = {
+    en: { title: "Customer chat", hint: "Ask about fees, margin, verification or withdrawals, or about your own account.",
+          placeholder: "Type a message", send: "Send", toggle: "عربي", working: "Agent is working…",
+          greeting: "Pick a demo customer at the top, or try one of the suggestions below. You can write in English or Arabic." },
+    ar: { title: "محادثة العميل", hint: "اسأل عن الرسوم أو الهامش أو التوثيق أو السحب، أو عن حسابك.",
+          placeholder: "اكتب رسالتك", send: "إرسال", toggle: "English", working: "جارٍ تجهيز الرد…",
+          greeting: "مرحباً بك في دعم أوريليا. اكتب سؤالك بالعربية أو الإنجليزية، أو اختر أحد الاقتراحات أدناه." },
+  };
+  let lang = (navigator.language || "").toLowerCase().startsWith("ar") ? "ar" : "en";
+  const tries = () => (lang === "ar" ? TRIES_AR : TRIES);
   const ROUTE_NAMES = {
     faq: "Document search", account: "Account tools", complaint: "Complaint", limit_exception: "Limit request",
     account_closure: "Closure", advice: "Advice refusal", out_of_scope: "Off topic", blocked: "Blocked",
@@ -360,7 +384,7 @@
     if (busy || !text.trim()) return;
     busy = true; $("#send-btn").disabled = true;
     userMsg(text);
-    const t = document.createElement("div"); t.className = "typing"; t.textContent = "Agent is working…"; log.append(t); scrollDown();
+    const t = document.createElement("div"); t.className = "typing"; t.textContent = UI[lang].working; log.append(t); scrollDown();
     try {
       const r = await api("/chat", { method: "POST", body: JSON.stringify({ session_id: session, customer_id: customer || null, message: text }) });
       t.remove(); botMsg(r);
@@ -376,11 +400,13 @@
   $("#send").addEventListener("submit", (e) => { e.preventDefault(); const v = $("#msg").value; $("#msg").value = ""; send(v); });
 
   function renderTries() {
-    $("#tries").innerHTML = TRIES.map((t, i) =>
+    $("#tries").innerHTML = tries().map((t, i) =>
       `<button class="try" type="button" data-i="${i}"><small>${esc(t.label)}:</small> ${esc(t.text.length > 46 ? t.text.slice(0, 44) + "…" : t.text)}</button>`).join("");
+  }
+  function bindTries() {
     $("#tries").addEventListener("click", (e) => {
       const b = e.target.closest(".try"); if (!b) return;
-      const t = TRIES[+b.dataset.i];
+      const t = tries()[+b.dataset.i];
       if (t.as && t.as !== customer) { $("#customer").value = t.as; switchCustomer(t.as); }
       send(t.text);
     });
@@ -568,9 +594,23 @@
     document.querySelectorAll(".tabs button").forEach((x) => x.setAttribute("aria-selected", String(x === b)));
   }));
 
-  loadCustomers(); renderTries(); loadRuntime(); loadEval(); loadQueue();
+  // ---------------------------------------------------------------- chat language
+  function applyLang() {
+    const u = UI[lang];
+    $("#pane-chat").dir = lang === "ar" ? "rtl" : "ltr";
+    $("#pane-chat").lang = lang;
+    $("#chat-title").textContent = u.title;
+    if (!customer) $("#who-hint").textContent = u.hint;
+    $("#msg").placeholder = u.placeholder;
+    $("#send-btn").textContent = u.send;
+    $("#lang").textContent = u.toggle;
+    renderTries();
+  }
+  $("#lang").addEventListener("click", () => { lang = lang === "ar" ? "en" : "ar"; applyLang(); note(UI[lang].greeting); });
+
+  loadCustomers(); bindTries(); applyLang(); loadRuntime(); loadEval(); loadQueue();
   setInterval(loadQueue, 3000);
-  note("Pick a demo customer at the top, or try one of the suggestions below.");
+  note(UI[lang].greeting);
 })();
 </script>
 </body>

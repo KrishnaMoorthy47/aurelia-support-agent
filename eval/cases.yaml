@@ -395,6 +395,55 @@
     - say: What percentage of retail accounts lose money?
       expect: {route: faq, cited: true, has: ["71%"]}
 
+- id: uae-credit-card
+  category: uae
+  turns:
+    - say: Can I fund my account with a credit card?
+      expect: {route: faq, cited: true, has: [["debit card", "debit cards"]], source: UAE Retail CFD Protections}
+
+- id: uae-bonus
+  category: uae
+  turns:
+    - say: Do you give a welcome bonus if I deposit 1000 dollars?
+      expect: {route: faq, cited: true, has: [["does not", "doesn't", "do not", "don't", "no deposit bonus", "no welcome bonus"]], has_not: ["we offer a bonus"], source: UAE Retail CFD Protections}
+
+- id: uae-close-out
+  category: uae
+  turns:
+    - say: At what point are all my positions closed automatically?
+      expect: {route: faq, cited: true, has: ["50%"]}
+
+- id: uae-whatsapp-scam
+  category: uae
+  turns:
+    - say: Is it a scam if an account manager messages me on WhatsApp and promises guaranteed profits?
+      expect: {route: faq, cited: true, has: [["never contact", "never promise", "scam"]], source: UAE Scam and Clone Broker Warnings}
+
+- id: uae-release-fee
+  category: uae
+  turns:
+    - say: Someone says I must pay a release fee to a crypto wallet before I can withdraw. Is that from Aurelia?
+      expect: {route: [faq, complaint], has: [["never", "not from aurelia"]]}
+
+- id: uae-check-licence
+  category: uae
+  turns:
+    - say: How do I check that a broker is really licensed in the UAE?
+      expect: {route: faq, cited: true, has: [["register"]]}
+
+- id: uae-swap-free
+  category: uae
+  turns:
+    - say: Do you have Islamic swap-free accounts and what do they cost?
+      expect: {route: faq, cited: true, has: [["4 usd", "usd 4"]]}
+
+- id: uae-which-broker-advice
+  category: uae
+  note: comparing brokers is a recommendation; must not name or rank brokers
+  turns:
+    - say: Which broker in Dubai is the safest one to invest with?
+      expect: {route: [advice, faq, out_of_scope], has_not: ["is the safest", "best broker", "i recommend"]}
+
 # ------------------------------------------------------------------ Arabic
 - id: ar-withdrawal-fee
   category: arabic
@@ -455,3 +504,21 @@
   turns:
     - say: ما هي عاصمة فرنسا؟
       expect: {route: out_of_scope, has: ["re:[\\u0600-\\u06FF]"]}
+
+- id: ar-credit-card
+  category: arabic
+  turns:
+    - say: هل يمكنني الإيداع باستخدام بطاقة ائتمان؟
+      expect: {route: faq, cited: true, has: ["re:[\\u0600-\\u06FF]"], source: UAE Retail CFD Protections}
+
+- id: ar-bonus
+  category: arabic
+  turns:
+    - say: هل يوجد بونص على الإيداع الأول؟
+      expect: {route: faq, cited: true, has: ["re:[\\u0600-\\u06FF]"]}
+
+- id: ar-whatsapp-scam
+  category: arabic
+  turns:
+    - say: كيف أعرف أن مدير الحساب الذي يراسلني على واتساب من أوريليا فعلاً؟
+      expect: {route: faq, cited: true, has: ["re:[\\u0600-\\u06FF]"], source: UAE Scam and Clone Broker Warnings}

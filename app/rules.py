@@ -178,7 +178,21 @@ _FAQ = re.compile(
     r"kyc|verify|verification|account type|islamic|swap.?free|complain|complaint|ombudsman|platform|trading hours|"
     r"support hours|inactiv\w+|risk|cfd|currency conversion|minimum|negative balance|raw account|standard account|"
     r"proof of address|source of funds|processing time|aurelia|emirates id|uae pass|ejari|aed|dirham|cma|dfsa|"
-    r"regulat\w+|licen[cs]\w*|segregat\w+|client money|personal data|privacy|arabic)\b"
+    r"regulat\w+|licen[cs]\w*|segregat\w+|client money|personal data|privacy|arabic|"
+    r"bonus\w*|credit card|debit card|introducer|referral|clone|fake|impersonat\w*|whatsapp|telegram|phishing|"
+    r"account manager|close.?out|scam\w*|fraud\w*|broker)\b"
+)
+# Policy topics that mention "my account" or "my documents" but are answered from the documents, not account data:
+# "Can I fund my account with a credit card?", "Can you delete all my documents?"
+_POLICY_FIRST = re.compile(
+    r"\b(credit card|debit card|bonus\w*|swap.?free|islamic account|"
+    r"delete (all )?(of )?my (documents|data|personal data|records)|erase my (data|documents))\b"
+)
+_POLICY_FIRST_AR = re.compile(r"(بطاقه ائتمان|بطاقه الائتمان|بطاقه خصم|بونص|مكافا|حساب اسلامي|(حذف|احذف|امسح) (مستنداتي|بياناتي|وثائقي))")
+# "How do I spot a scam broker?" is a question about staying safe, not a grievance.
+_SCAM_INFO = re.compile(
+    r"\b(spot|check|recogni[sz]e|tell if|tell whether|know if|avoid|protect|identify|real or|legit\w*|genuine)\b"
+    r"|\b(clone|fake|impersonat\w*|whatsapp|telegram|account manager)\b"
 )
 
 # Arabic routing floor. Each pattern mirrors the English one above it.
@@ -191,8 +205,11 @@ _FAQ_AR = re.compile(
     r"(رسوم|رسم|السبريد|فارق السعر|عموله|العموله|تبييت|السواب|رافعه|الرافعه|هامش|الهامش|ايداع|الايداع|سحب|السحب|التحقق|توثيق|"
     r"الهويه|هويه|اسلامي|شكوي|الشكاوي|المنصه|منصه|ساعات|مخاطر|المخاطر|عقود الفروقات|الحد الادني|رصيد سالب|الرصيد السالب|"
     r"اثبات العنوان|مصدر الاموال|الاماراتيه|الامارات|ترخيص|مرخص|مرخصه|ينظم|يرخص|الجهه التنظيميه|هيئه|بيانات|بياناتي|الخصوصيه|درهم|"
-    r"اموال العملاء|اموالي|منفصله|تخسر|حساب تجريبي|الحساب التجريبي|انواع الحسابات|العربيه|aurelia|اوريليا)"
+    r"اموال العملاء|اموالي|منفصله|تخسر|حساب تجريبي|الحساب التجريبي|انواع الحسابات|العربيه|aurelia|اوريليا|"
+    r"مكافا|مكافاه|بونص|بطاقه ائتمان|بطاقه الائتمان|بطاقه خصم|مزيف|مزيفه|منتحل|واتساب|تيليجرام|مدير حساب|محتال|"
+    r"بدون تبييت|خالي من التبييت|حساب اسلامي)"
 )
+_SCAM_INFO_AR = re.compile(r"(كيف|هل).{0,30}(اعرف|اتحقق|اتاكد|اكتشف|احمي|اتجنب)|مزيف|منتحل|واتساب|مدير حساب")
 
 
 def is_info_question(text: str) -> bool:
@@ -212,8 +229,12 @@ def rule_route(text: str) -> str:
         return "limit_exception"
     info_q = bool(_INFO_Q.match(t))
     grievance = _STRONG_GRIEVANCE.search(t) or _STRONG_GRIEVANCE_AR.search(t)
+    if grievance and info_q and (_SCAM_INFO.search(t) or _SCAM_INFO_AR.search(t)):
+        grievance = None
     if grievance or ((_COMPLAINT.search(t) or _COMPLAINT_AR.search(t)) and not info_q):
         return "complaint"
+    if _POLICY_FIRST.search(t) or _POLICY_FIRST_AR.search(t):
+        return "faq"
     if _ACCOUNT.search(t) or _ACCOUNT_AR.search(t):
         return "account"
     if _FAQ.search(t) or _FAQ_AR.search(t):

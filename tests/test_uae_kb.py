@@ -14,6 +14,13 @@ from app.rag.stores import MemoryStore
     ("how long do AED bank transfer deposits take", "Deposits and withdrawals in AED"),
     ("why do you ask about my source of funds", "Why we ask about your source of funds"),
     ("how long are my records kept after closing the account", "How long records are kept"),
+    ("can I fund my trading account with a credit card", "Credit cards cannot be used to fund trading"),
+    ("do you offer a deposit bonus or trading credits", "No deposit bonuses or trading incentives"),
+    ("when are all my positions closed automatically under the DFSA rules", "Automatic close-out at 50%"),
+    ("an account manager on WhatsApp promised me guaranteed profits", "Fake account managers on WhatsApp and social media"),
+    ("how do I check that a broker website is not a clone", "Clone websites and fake apps"),
+    ("they asked me to pay a release fee before I can withdraw", "Requests to pay fees or send money"),
+    ("do you have Islamic swap-free accounts", "What a swap-free account is"),
 ])
 def test_uae_questions_find_the_uae_section(retriever, query, section):
     res = retriever.search(query)
@@ -25,6 +32,13 @@ def test_uae_docs_use_the_current_regulator_name():
     text = " ".join(c.content for c in load_chunks() if c.doc.startswith(("09_", "10_", "11_")))
     assert "Capital Market Authority (CMA)" in text
     assert "renamed on 1 January 2026" in text
+
+
+def test_retail_protection_figures_match_the_margin_document():
+    text = " ".join(c.content for c in load_chunks() if c.doc.startswith("12_"))
+    for figure in ("1:30", "3.3%", "50%", "1:2"):
+        assert figure in text
+    assert "debit cards" in text and "credit card" in text
 
 
 def test_sync_embeds_only_new_or_changed_sections_and_removes_stale_ones():

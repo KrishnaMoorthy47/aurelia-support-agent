@@ -19,6 +19,8 @@ All company data is invented. Nothing here is financial advice.
 | Complaint | Ticket logged immediately; webhook fired |
 | Limit increase / account closure | Details collected → policy check → reviewer approval → applied over MCP |
 | UAE question ("Can I verify with my Emirates ID?") | Answered from the UAE documents: regulator, client money, onboarding, data privacy |
+| UAE retail rules ("Can I deposit with a credit card?", "Do you give a bonus?") | Answered from the retail-protection document, which follows the DFSA's retail CFD rules |
+| Scam check ("Someone on WhatsApp says he's my account manager") | Answered from the scam-warning document; a customer who says they were defrauded is routed to a complaint ticket |
 | Arabic message ("ما هي رسوم السحب؟") | Same pipeline; searched in English, answered in Arabic with citations |
 
 ## Architecture
@@ -63,17 +65,30 @@ Benchmark (`eval/retrieval_bench.py`, 35 labelled questions):
 
 BM25 on a customer's own wording adds noise; on the rewritten query it adds precision.
 
+After the UAE documents were added (77 chunks, 17 keyword and 23 paraphrase questions), multi-query RRF scores 100% keyword hit@3 and 96% paraphrase hit@3 (74% hit@1). The one miss is an inactivity question whose rewrite varies between runs.
+
 ## UAE knowledge base
 
-Three documents describe how a UAE-facing broker works (`app/kb/docs/09`–`11`):
+Six documents describe how a UAE-facing broker works (`app/kb/docs/09`–`14`):
 
 | Document | Covers |
 |---|---|
 | UAE Regulation and Client Money | Capital Market Authority (CMA, formerly SCA, renamed 1 January 2026), DIFC/DFSA and ADGM/FSRA, segregated client money, retail vs professional clients, AED deposits |
 | UAE Account Opening and Verification | Emirates ID and UAE Pass, accepted proofs of address, Arabic name spellings, source of funds under Federal Decree-Law No. 10 of 2025 (AML) |
 | UAE Risk Warning, Data Privacy and Language | Retail loss percentage, UAE Personal Data Protection Law (Federal Decree-Law No. 45 of 2021), record keeping, Arabic support, complaints to the CMA |
+| UAE Retail CFD Protections | DFSA retail CFD rules (COB 6.16): minimum margins by asset class, close-out at 50% of margin, negative balance protection, no bonuses or trading incentives, no credit-card funding, no paid referrals from unregulated persons, stand-alone risk warning with a quarterly loss percentage, appropriateness check |
+| UAE Scam and Clone Broker Warnings | Checking the CMA, DFSA and FSRA registers, clone sites, fake account managers on WhatsApp, "release fee" requests, calls impersonating authorities |
+| Islamic (Swap-Free) Accounts | Swap-free accounts and their administration fee, eligibility, approval time |
 
-The regulators and laws are real; Aurelia's licence, figures and policies are invented.
+The regulators and laws are real; Aurelia's licence, figures and policies are invented. Aurelia's retail leverage (1:30 major FX, 1:20 gold and major indices, 1:10 other commodities, 1:2 crypto) and its 50% stop-out match the DFSA minimum margins and close-out rule.
+
+Sources checked for the regulatory facts:
+
+- CMA, new law and rename: https://www.uaecma.gov.ae/en/new-cma-law
+- CMA licensed companies and warnings: https://www.uaecma.gov.ae/en/open-data/licensed-companies, https://www.uaecma.gov.ae/en/open-data/warnings
+- DFSA Conduct of Business module, section 6.16 Restricted Speculative Investments (VER51/07-26): https://dfsaen.thomsonreuters.com/rulebook/conduct-business-module-cob
+- ADGM FSRA, OTC leveraged products: https://www.adgm.com/media/announcements/regulatory-update-otc-leveraged-products-implementation
+- ICP warning on fake calls and websites: https://icp.gov.ae/en/
 
 ## Arabic
 
@@ -84,15 +99,16 @@ The regulators and laws are real; Aurelia's licence, figures and policies are in
 
 ## Evaluation
 
-`eval/run_eval.py` runs 65 scripted conversations through the graph and scores routing, facts, citations, compliance, the approval flow, latency and tokens.
+`eval/run_eval.py` runs 76 scripted conversations through the graph and scores routing, facts, citations, compliance, the approval flow, latency and tokens.
 
 | Run | Passed |
 |---|---|
 | Initial | 34 / 49 |
 | Critic grounded on evidence, citation format fixed | 49 / 49 |
 | Supabase + multi-query retrieval | 49 / 49, 0 compliance violations, ~1.2 s median |
+| UAE retail rules, scam warnings, swap-free accounts, Arabic UI | 76 / 76, 0 compliance violations, 1.1 s median |
 
-The runs above cover the original 49 conversations. Sixteen UAE and Arabic conversations (categories `uae` and `arabic`) were added afterwards: `python eval/run_eval.py --only uae` and `--only arabic`.
+The last run includes 15 UAE and 12 Arabic conversations: `python eval/run_eval.py --only uae` and `--only arabic`.
 
 ## Run locally
 

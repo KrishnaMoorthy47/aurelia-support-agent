@@ -10,8 +10,12 @@ Messages may be in Arabic or English. The search_query must ALWAYS be in English
 in English (for example "ما هي رسوم السحب؟" -> "withdrawal fees").
 
 Labels:
-- faq: a general question about fees, margin, leverage, verification, deposits/withdrawals, account types, platform, complaints policy, risks.
+- faq: a general question about fees, margin, leverage, verification, deposits/withdrawals, payment methods (credit or debit
+  cards), bonuses, account types including Islamic swap-free accounts, platform, complaints policy, risks, UAE regulation and
+  licensing, how to check whether a broker is licensed, scams, clone sites, fake "account managers" or fee requests that claim
+  to come from Aurelia, data privacy and how long records are kept.
 - account: the customer asks about THEIR OWN account data (their verification status, their limits, their tickets, their account status).
+  A policy question that only mentions "my account" (e.g. "can I fund my account with a credit card?") is faq.
 - complaint: the customer is expressing a grievance or wants to file a complaint / speak to a manager.
 - limit_exception: the customer asks for a higher withdrawal limit than they have.
 - account_closure: the customer wants to close their account.
