@@ -75,9 +75,13 @@ class AuditWriter:
         except Exception as exc:
             log.warning("audit log write failed: %s", type(exc).__name__)
 
-    async def drain(self) -> None:
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+    async def drain(self, timeout: float = 5.0) -> None:
+        """Wait for pending writes. Polls rather than awaiting the tasks, so it also works when called from
+        another event loop (the test client runs the app on its own loop in a separate thread)."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while any(not t.done() for t in list(self._tasks)) and loop.time() < deadline:
+            await asyncio.sleep(0.01)
 
 
 def make_sink(mode: str, dsn: str):
