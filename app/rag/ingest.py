@@ -31,12 +31,29 @@ def ingest(store: VectorStore, embedder: Embedder) -> int:
     return len(chunks)
 
 
+def sync(store: VectorStore, embedder: Embedder) -> tuple[int, int]:
+    """Bring the store in line with the markdown files: embed new or edited sections, drop removed ones.
+
+    Returns (embedded, deleted). Unchanged sections are not re-embedded.
+    """
+    stored = {c.id: c for c in store.load_chunks(embedder.name)}
+    current = load_chunks()
+    changed = [c for c in current if stored.get(c.id) != c]
+    stale = sorted(set(stored) - {c.id for c in current})
+    if changed:
+        store.upsert(changed, embedder.embed([c.text_for_embedding for c in changed]), embedder.name)
+    if stale:
+        store.delete(stale, embedder.name)
+    if changed or stale:
+        log.info("knowledge base sync: %d embedded, %d removed", len(changed), len(stale))
+    return len(changed), len(stale)
+
+
 def build_retriever(store: VectorStore | None = None, embedder: Embedder | None = None) -> HybridRetriever:
-    """Used by the API at startup. Ingests automatically if the store has nothing for this embedder."""
+    """Used by the API at startup. Embeds any section that is new or edited since the last run."""
     store = store or make_store()
     embedder = embedder or get_embedder()
-    if store.count(embedder.name) == 0:
-        ingest(store, embedder)
+    sync(store, embedder)
     return HybridRetriever(store, embedder)
 
 

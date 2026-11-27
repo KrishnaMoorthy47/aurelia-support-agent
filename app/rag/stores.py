@@ -18,6 +18,8 @@ class VectorStore(Protocol):
 
     def load_chunks(self, embedder: str) -> list[Chunk]: ...
 
+    def delete(self, ids: list[str], embedder: str) -> None: ...
+
     def search(self, vector: np.ndarray, k: int, embedder: str) -> list[tuple[str, float]]:
         """Return [(chunk_id, cosine_similarity)] best first."""
         ...
@@ -38,6 +40,11 @@ class MemoryStore:
 
     def load_chunks(self, embedder):
         return [c for cid, c in self._chunks.items() if self._embedder[cid] == embedder]
+
+    def delete(self, ids, embedder):
+        for cid in ids:
+            if self._embedder.get(cid) == embedder:
+                del self._chunks[cid], self._vecs[cid], self._embedder[cid]
 
     def search(self, vector, k, embedder):
         ids = [cid for cid, e in self._embedder.items() if e == embedder]
@@ -119,6 +126,11 @@ class PgVectorStore:
                 "select id, doc, title, section, content from kb_chunks where embedder = %s order by id", (embedder,)
             ).fetchall()
         return [Chunk(*r) for r in rows]
+
+    def delete(self, ids, embedder):
+        if ids:
+            with self._conn() as c:
+                c.execute("delete from kb_chunks where embedder = %s and id = any(%s)", (embedder, list(ids)))
 
     def search(self, vector, k, embedder):
         lit = _vec_literal(vector)
