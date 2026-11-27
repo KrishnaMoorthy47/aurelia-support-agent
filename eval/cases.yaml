@@ -351,3 +351,46 @@
       expect: {route: account_closure, status: pending_approval}
     - decide: {approved: true, reviewer: eval-reviewer}
       expect: {status: done, has: ["pending closure"]}
+
+# ------------------------------------------------------------------ UAE knowledge base (English)
+- id: uae-emirates-id
+  category: uae
+  turns:
+    - say: Can UAE residents verify with an Emirates ID?
+      expect: {route: faq, cited: true, has: [emirates id, passport], source: UAE Account Opening}
+
+- id: uae-regulator
+  category: uae
+  turns:
+    - say: Who regulates Aurelia in the UAE?
+      expect: {route: faq, cited: true, has: [["capital market authority", "cma"]], source: UAE Regulation}
+
+- id: uae-sca-renamed
+  category: uae
+  turns:
+    - say: Is Aurelia licensed by the SCA?
+      expect: {route: faq, cited: true, has: [["capital market authority", "cma"], ["renamed", "previously", "formerly"]]}
+
+- id: uae-client-money
+  category: uae
+  turns:
+    - say: Is my money kept separate from Aurelia's own money?
+      expect: {route: faq, cited: true, has: [["segregated", "separate"]], has_not: ["guarantee of returns"]}
+
+- id: uae-aed-deposit
+  category: uae
+  turns:
+    - say: How quickly is a local AED bank transfer credited?
+      expect: {route: faq, cited: true, has: [["13:00", "1 pm", "1pm"], ["same day", "same business day"]]}
+
+- id: uae-record-deletion
+  category: uae
+  turns:
+    - say: I closed my account. Can you delete all my documents right away?
+      expect: {route: [faq, account_closure, account], has: [["5 years", "five years"]]}
+
+- id: uae-loss-percentage
+  category: uae
+  turns:
+    - say: What percentage of retail accounts lose money?
+      expect: {route: faq, cited: true, has: ["71%"]}

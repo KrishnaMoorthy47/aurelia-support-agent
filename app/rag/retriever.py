@@ -78,6 +78,10 @@ class HybridRetriever:
         # for any shared word ("match", "account"), which let unrelated questions through.
         confident = best >= self.embedder.min_score
         if not self.embedder.semantic:
-            scores = self._bm25.get_scores(terms(rewrite if use_rewrite else query))
-            confident = confident or float(max(scores)) >= BM25_GATE
+            q_terms = set(terms(rewrite if use_rewrite else query))
+            scores = self._bm25.get_scores(list(q_terms))
+            # The keyword stand-in also needs two shared words when the question has two, so one
+            # coincidental word ("capital" in "Capital Market Authority") is not enough.
+            overlap = max((len(q_terms & set(terms(h.chunk.text_for_embedding))) for h in hits), default=0)
+            confident = (confident or float(max(scores)) >= BM25_GATE) and overlap >= min(2, len(q_terms))
         return Retrieval(hits, best, confident)
