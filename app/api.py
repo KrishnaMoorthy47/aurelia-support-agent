@@ -25,7 +25,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from app.agents.graph import Deps, build_graph
-from app.audit import AuditWriter, body_to_json, make_sink
+from app.audit import AuditWriter, body_to_json, make_sink, response_to_json
 from app.config import get_settings
 from app.i18n import detect_language, msg
 from app.llm import get_llm
@@ -158,30 +158,40 @@ def create_app(*, llm=None, retriever=None, mock_db_path: str | None = None) -> 
 
     @app.middleware("http")
     async def audit_log(request: Request, call_next):
-        """Log every POST and every error response with its request and response bodies (never headers)."""
+        """Log every request with its timing, request body and response body (never headers or IP addresses)."""
         request_id = str(uuid.uuid4())
         request.state.request_id = request_id
+        started_at = datetime.now(timezone.utc)
         started = time.perf_counter()
         body = await request.body()
-        response = await call_next(request)
-        if request.method != "POST" and response.status_code < 400:
-            response.headers["X-Request-ID"] = request_id
-            return response
+
+        def record(status: int, req_json: Any, resp_json: Any) -> None:
+            audit = getattr(request.app.state, "audit", None)
+            if audit is None:
+                return
+            req_d = req_json if isinstance(req_json, dict) else {}
+            resp_d = resp_json if isinstance(resp_json, dict) else {}
+            path_params = request.scope.get("path_params") or {}
+            audit.submit({
+                "request_id": request_id, "started_at": started_at, "method": request.method, "path": request.url.path,
+                "query": request.url.query[:500] or None, "status_code": status,
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "session_id": req_d.get("session_id") or path_params.get("approval_id") or path_params.get("session_id") or resp_d.get("approval_id"),
+                "customer_id": req_d.get("customer_id"), "route": resp_d.get("route"),
+                "user_agent": (request.headers.get("user-agent") or "")[:300] or None,
+                "request": req_json, "response": resp_json,
+            })
+
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            record(500, body_to_json(body), {"error": type(exc).__name__, "detail": str(exc)[:500]})
+            raise
 
         chunks = [chunk async for chunk in response.body_iterator]
         resp_body = b"".join(chunks)
-        req_json, resp_json = body_to_json(body), body_to_json(resp_body)
-        req_d = req_json if isinstance(req_json, dict) else {}
-        resp_d = resp_json if isinstance(resp_json, dict) else {}
-        audit = getattr(request.app.state, "audit", None)
-        if audit is not None:
-            audit.submit({
-                "request_id": request_id, "method": request.method, "path": request.url.path,
-                "status_code": response.status_code, "latency_ms": int((time.perf_counter() - started) * 1000),
-                "session_id": req_d.get("session_id") or request.path_params.get("approval_id") or resp_d.get("approval_id"),
-                "customer_id": req_d.get("customer_id"), "route": resp_d.get("route"),
-                "request": req_json, "response": resp_json,
-            })
+        record(response.status_code, body_to_json(body),
+               response_to_json(resp_body, response.headers.get("content-type", ""), request.method, response.status_code))
         headers = dict(response.headers)
         headers["X-Request-ID"] = request_id
         return Response(content=resp_body, status_code=response.status_code, headers=headers, media_type=response.media_type)

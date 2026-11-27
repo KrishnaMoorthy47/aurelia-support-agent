@@ -45,7 +45,7 @@ All company data is invented. Nothing here is financial advice.
 - The critic checks every reply with rules and a small model that sees the same evidence the reply was written from. A failing draft gets one rewrite, then a safe fallback.
 - Fixed replies (refusals, approval messages, holding replies) are written by hand in English and Arabic (`app/i18n.py`), so they read the same every time.
 - Every step in the trace carries its duration, and the model calls and tokens it used. The model counters are shared across requests, so per-step token counts are approximate under concurrent traffic.
-- Approval requests carry the trace id of the customer's request and a timestamp. Each reviewer decision is recorded with both trace ids (request and decision), listed at `GET /approvals/audit`, and exportable as JSON from the compliance desk. Every POST is also in the `api_logs` table.
+- Approval requests carry the trace id of the customer's request and a timestamp. Each reviewer decision is recorded with both trace ids (request and decision), listed at `GET /approvals/audit`, and exportable as JSON from the compliance desk. Every request is also in the `api_logs` table.
 - Models: `qwen/qwen3.8-27b` for routing and review, `openai/gpt-oss-120b` for answers. Switching to Claude or OpenAI is a config change (`LLM_PROVIDER`).
 
 ## Retrieval
@@ -133,7 +133,7 @@ Set `DATABASE_URL` to the project's **Session pooler** connection string and `VE
 | Table | Contents |
 |---|---|
 | `kb_chunks` | document chunks and embeddings |
-| `api_logs` | every POST and error response: timestamp, request id, latency, session, route, request and response bodies |
+| `api_logs` | every request, including GETs and unhandled errors: start time, request id, method, path, query, status, latency, session, customer, route, user agent, request body and response body (HTML and large GET responses by size only). Headers and IP addresses are never stored. Rows older than 30 days are deleted on startup |
 
 Both tables have RLS enabled with no policies, so only the app's database role can access them.
 

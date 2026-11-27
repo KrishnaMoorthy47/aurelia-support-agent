@@ -153,13 +153,22 @@ def test_chat_is_audited_with_request_and_response(client):
     assert rec["request_id"] == r.headers["x-request-id"] and rec["latency_ms"] >= 0
 
 
-def test_polling_gets_are_not_audited_but_errors_are(client):
+def test_gets_and_errors_are_audited(client):
     before = len(_audit(client))
-    client.get("/health"), client.get("/approvals"), client.get("/customers")
-    assert len(_audit(client)) == before
+    client.get("/health"), client.get("/approvals"), client.get("/customers?x=1", headers={"User-Agent": "probe/1.0"})
+    recs = _audit(client)[before:]
+    assert [r["path"] for r in recs] == ["/health", "/approvals", "/customers"]
+    assert recs[-1]["query"] == "x=1" and recs[-1]["user_agent"] == "probe/1.0" and recs[-1]["started_at"]
+    assert isinstance(recs[-1]["response"], list)
     client.get("/sessions/does-not-exist")
     rec = _audit(client)[-1]
-    assert rec["status_code"] == 404 and rec["method"] == "GET"
+    assert rec["status_code"] == 404 and rec["method"] == "GET" and rec["session_id"] == "does-not-exist"
+
+
+def test_page_and_large_responses_are_logged_by_size_only(client):
+    client.get("/")
+    rec = _audit(client)[-1]
+    assert rec["path"] == "/" and "html" in rec["response"]["content_type"] and rec["response"]["bytes"] > 1000
 
 
 def test_audit_never_stores_headers_or_keys(client):

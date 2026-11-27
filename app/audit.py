@@ -12,7 +12,9 @@ from app.rag.stores import SCHEMA_SQL, open_pool
 log = logging.getLogger("aurelia.audit")
 
 MAX_BODY_CHARS = 50_000
-COLUMNS = ("request_id", "method", "path", "status_code", "latency_ms", "session_id", "customer_id", "route", "request", "response")
+MAX_GET_BODY_CHARS = 20_000  # successful GETs over this (the page itself, the eval report) are logged by size only
+COLUMNS = ("request_id", "started_at", "method", "path", "query", "status_code", "latency_ms", "session_id", "customer_id",
+           "route", "user_agent", "request", "response")
 
 
 def body_to_json(raw: bytes) -> Any:
@@ -25,6 +27,17 @@ def body_to_json(raw: bytes) -> Any:
         return json.loads(text)
     except json.JSONDecodeError:
         return {"text": text}
+
+
+def response_to_json(raw: bytes, content_type: str, method: str, status: int) -> Any:
+    """JSON responses are stored as JSON; other content (HTML, files) and large successful GETs only by type and size."""
+    if not raw:
+        return None
+    if "json" not in (content_type or ""):
+        return {"content_type": content_type, "bytes": len(raw)}
+    if method == "GET" and status < 400 and len(raw) > MAX_GET_BODY_CHARS:
+        return {"omitted": "large response", "bytes": len(raw)}
+    return body_to_json(raw)
 
 
 class MemoryAuditLog:

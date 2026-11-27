@@ -34,8 +34,17 @@ create table if not exists api_logs (
   response    jsonb
 );
 
+alter table api_logs add column if not exists started_at timestamptz;
+alter table api_logs add column if not exists query text;
+alter table api_logs add column if not exists user_agent text;
+
 create index if not exists api_logs_created_at_idx on api_logs (created_at desc);
 create index if not exists api_logs_session_idx on api_logs (session_id);
+create index if not exists api_logs_request_idx on api_logs (request_id);
+create index if not exists api_logs_path_idx on api_logs (path, created_at desc);
+
+-- Keep 30 days of request logs so the free database doesn't fill up.
+delete from api_logs where created_at < now() - interval '30 days';
 
 -- No policies: only the database owner (the app) can read or write; the public Data API can't.
 alter table kb_chunks enable row level security;

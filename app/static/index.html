@@ -692,7 +692,7 @@
   $("#lang").addEventListener("click", () => { lang = lang === "ar" ? "en" : "ar"; applyLang(); note(UI[lang].greeting); });
 
   loadCustomers(); bindTries(); applyLang(); loadRuntime(); loadEval(); loadQueue(); loadAudit();
-  setInterval(loadQueue, 3000);
+  setInterval(() => { if (!document.hidden) loadQueue(); }, 5000);
   note(UI[lang].greeting);
 })();
 </script>
