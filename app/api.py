@@ -43,6 +43,9 @@ def _reason(exc: Exception) -> str:
     lines = [l.strip() for l in str(exc).splitlines() if l.strip()]
     return f"{type(exc).__name__}: {lines[-1][:200] if lines else ''}"
 
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
 STATIC_DIR = Path(__file__).parent / "static"
 EVAL_REPORT = Path(__file__).resolve().parents[1] / "eval" / "report.json"
 
@@ -133,6 +136,7 @@ def create_app(*, llm=None, retriever=None, mock_db_path: str | None = None) -> 
             app.state.graph = build_graph(Deps(the_llm, the_retriever, gateway, notify), checkpointer)
             app.state.llm, app.state.retriever, app.state.gateway = the_llm, the_retriever, gateway
             app.state.pending: dict[str, dict] = {}
+            app.state.decisions: list[dict] = []  # every reviewer decision, newest last
             app.state.limiter = RateLimiter(s.rate_limit_per_minute)
             app.state.daily_cap = DailyCap(s.demo_daily_cap)
             app.state.mock_db_path = mock_db_path or s.mock_db_path
@@ -156,6 +160,7 @@ def create_app(*, llm=None, retriever=None, mock_db_path: str | None = None) -> 
     async def audit_log(request: Request, call_next):
         """Log every POST and every error response with its request and response bodies (never headers)."""
         request_id = str(uuid.uuid4())
+        request.state.request_id = request_id
         started = time.perf_counter()
         body = await request.body()
         response = await call_next(request)
@@ -255,7 +260,10 @@ def create_app(*, llm=None, retriever=None, mock_db_path: str | None = None) -> 
         interrupts = result.get("__interrupt__")
         if interrupts:
             action = interrupts[0].value["action"]
-            request.app.state.pending[req.session_id] = {"approval_id": req.session_id, "customer_id": action["customer_id"], "action": action}
+            request.app.state.pending[req.session_id] = {
+                "approval_id": req.session_id, "customer_id": action["customer_id"], "action": action,
+                "trace_id": getattr(request.state, "request_id", None), "requested_at": _now(),
+            }
             return {"session_id": req.session_id, "status": "pending_approval", "reply": msg("holding", result.get("lang", "en")), "approval_id": req.session_id, **public(result)}
         return {"session_id": req.session_id, "status": "done", "reply": result["reply"], **public(result)}
 
@@ -280,8 +288,27 @@ def create_app(*, llm=None, retriever=None, mock_db_path: str | None = None) -> 
             raise HTTPException(404, "No pending approval with that id")
         cfg = {"configurable": {"thread_id": approval_id}}
         result = await request.app.state.graph.ainvoke(Command(resume=decision.model_dump()), cfg)
-        request.app.state.pending.pop(approval_id, None)
-        return {"approval_id": approval_id, "status": "done", "reply": result["reply"], **public(result)}
+        pending = request.app.state.pending.pop(approval_id, None) or {}
+        record = {
+            "approval_id": approval_id,
+            "action": (pending.get("action") or {}).get("type"),
+            "customer_id": pending.get("customer_id"),
+            "decision": "approved" if decision.approved else "declined",
+            "reviewer": decision.reviewer,
+            "note": decision.note,
+            "requested_at": pending.get("requested_at"),
+            "decided_at": _now(),
+            "request_trace_id": pending.get("trace_id"),
+            "decision_trace_id": getattr(request.state, "request_id", None),
+        }
+        request.app.state.decisions.append(record)
+        del request.app.state.decisions[:-200]
+        return {"approval_id": approval_id, "status": "done", "reply": result["reply"], "audit": record, **public(result)}
+
+    @app.get("/approvals/audit", dependencies=[Depends(need_reviewer_key)])
+    async def approval_audit(request: Request):
+        """Reviewer decisions with the trace ids of the request and the decision; each one is also in the request log."""
+        return list(reversed(request.app.state.decisions))
 
     return app
 

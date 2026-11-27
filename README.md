@@ -44,11 +44,13 @@ All company data is invented. Nothing here is financial advice.
 - Safety decisions (injection, advice, account access, approvals) are plain code; the model only writes text.
 - The critic checks every reply with rules and a small model that sees the same evidence the reply was written from. A failing draft gets one rewrite, then a safe fallback.
 - Fixed replies (refusals, approval messages, holding replies) are written by hand in English and Arabic (`app/i18n.py`), so they read the same every time.
+- Every step in the trace carries its duration, and the model calls and tokens it used. The model counters are shared across requests, so per-step token counts are approximate under concurrent traffic.
+- Approval requests carry the trace id of the customer's request and a timestamp. Each reviewer decision is recorded with both trace ids (request and decision), listed at `GET /approvals/audit`, and exportable as JSON from the compliance desk. Every POST is also in the `api_logs` table.
 - Models: `qwen/qwen3.8-27b` for routing and review, `openai/gpt-oss-120b` for answers. Switching to Claude or OpenAI is a config change (`LLM_PROVIDER`).
 
 ## Retrieval
 
-- One chunk per document section (57 chunks across 12 documents), embedded with `BAAI/bge-small-en-v1.5` (384-dim, local ONNX via fastembed) and stored in pgvector.
+- One chunk per document section (77 chunks across 15 documents), embedded with `BAAI/bge-small-en-v1.5` (384-dim, local ONNX via fastembed) and stored in pgvector.
 - The router also returns `search_query`, the question in the documents' vocabulary. This costs no extra call.
 - Reciprocal Rank Fusion over vector search on the original question, vector search on the rewrite, and BM25 on the rewrite.
 - The answer step runs only if the best cosine similarity is at least 0.55.
@@ -99,7 +101,7 @@ Sources checked for the regulatory facts:
 
 ## Evaluation
 
-`eval/run_eval.py` runs 76 scripted conversations through the graph and scores routing, facts, citations, compliance, the approval flow, latency and tokens.
+`eval/run_eval.py` runs 78 scripted conversations through the graph and scores routing, facts, citations, compliance, the approval flow, latency and tokens.
 
 | Run | Passed |
 |---|---|
@@ -107,6 +109,7 @@ Sources checked for the regulatory facts:
 | Critic grounded on evidence, citation format fixed | 49 / 49 |
 | Supabase + multi-query retrieval | 49 / 49, 0 compliance violations, ~1.2 s median |
 | UAE retail rules, scam warnings, swap-free accounts, Arabic UI | 76 / 76, 0 compliance violations, 1.1 s median |
+| Arabic advice and approval-injection cases added | 78 / 78, 0 compliance violations |
 
 The last run includes 15 UAE and 12 Arabic conversations: `python eval/run_eval.py --only uae` and `--only arabic`.
 

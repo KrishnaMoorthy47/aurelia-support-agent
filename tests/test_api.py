@@ -51,6 +51,30 @@ def test_full_human_approval_flow(client):
     assert client.post("/approvals/s1/decision", json={"approved": True, "reviewer": "x"}).status_code == 404
 
 
+def test_decisions_carry_trace_ids_and_are_listed_for_audit(client):
+    chat(client, "Can you increase my daily withdrawal limit?")
+    chat(client, "5000")
+    chat(client, "I need it for my university tuition fee next week")
+    pending = client.get("/approvals").json()[0]
+    assert pending["trace_id"] and pending["requested_at"]
+
+    done = client.post(f"/approvals/{pending['approval_id']}/decision", json={"approved": False, "reviewer": "r9", "note": "not now"})
+    rec = done.json()["audit"]
+    assert rec["decision"] == "declined" and rec["reviewer"] == "r9" and rec["action"] == "limit_exception"
+    assert rec["request_trace_id"] == pending["trace_id"]
+    assert rec["decision_trace_id"] == done.headers["X-Request-ID"]
+    assert rec["requested_at"] <= rec["decided_at"]
+    assert client.get("/approvals/audit").json()[0] == rec
+
+
+def test_trace_steps_are_timed(client):
+    trace = chat(client, "What is the withdrawal fee?").json()["trace"]
+    timed = [s for s in trace if s["step"] != "done"]
+    assert timed and all(isinstance(s.get("ms"), int) for s in timed)
+    hits = next(s for s in trace if s["step"] == "retrieve")["hits"]
+    assert hits and all(h["snippet"] for h in hits)
+
+
 def test_bad_input_is_rejected_by_validation(client):
     assert client.post("/chat", json={"session_id": "bad id!", "message": "hi"}).status_code == 422
     assert client.post("/chat", json={"session_id": "s", "customer_id": "../etc", "message": "hi"}).status_code == 422

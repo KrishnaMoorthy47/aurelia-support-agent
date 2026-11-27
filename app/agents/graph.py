@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, TypedDict
 
@@ -67,6 +68,25 @@ _MESSAGE_KEYS = set(MESSAGES)
 
 def _t(state: AgentState, step: str, **info: Any) -> list[dict]:
     return [*(state.get("trace") or []), {"step": step, **info}]
+
+
+def _timed(fn: Callable[[AgentState], Awaitable[dict]], llm: Any) -> Callable[[AgentState], Awaitable[dict]]:
+    """Stamp the step a node adds with its duration and the model calls and tokens it used.
+
+    The model counters are shared by all requests, so under concurrent traffic the per-step numbers are approximate."""
+
+    async def node(state: AgentState) -> dict:
+        start, calls, tokens = time.perf_counter(), getattr(llm, "calls", 0), getattr(llm, "tokens", 0)
+        out = await fn(state)
+        before = len(state.get("trace") or [])
+        trace = out.get("trace") if isinstance(out, dict) else None
+        if trace and len(trace) > before:
+            last = {"ms": round((time.perf_counter() - start) * 1000), **trace[-1],
+                    "llm_calls": getattr(llm, "calls", 0) - calls, "tokens": getattr(llm, "tokens", 0) - tokens}
+            out["trace"] = [*trace[:-1], last]
+        return out
+
+    return node
 
 
 def _json_from(text: str) -> dict:
@@ -162,22 +182,25 @@ def build_graph(deps: Deps, checkpointer: Any):
             query = rewrite  # the documents and the embedding model are English; the router's rewrite is English
         elif prev_user and len(message.split()) < 5 and not rewrite:
             query = f"{prev_user} {message}"  # without a rewrite, short follow-ups need the previous question
+        t0 = time.perf_counter()
         found = await _to_thread(retriever.search, query, rewrite)
-        trace = _t(state, "retrieve", query=query, rewrite=rewrite, confident=found.confident, best_score=round(found.best_vector_score, 3),
+        trace = _t(state, "retrieve", ms=round((time.perf_counter() - t0) * 1000), query=query, rewrite=rewrite, confident=found.confident, best_score=round(found.best_vector_score, 3),
                    hits=[{"source": h.chunk.citation, "rrf": round(h.rrf, 4), "vector": None if h.vector_score is None else round(h.vector_score, 3),
-                          "bm25_rank": h.bm25_rank, "vector_rank": h.vector_rank} for h in found.hits])
+                          "bm25_rank": h.bm25_rank, "vector_rank": h.vector_rank, "snippet": h.chunk.content[:220]} for h in found.hits])
         if not found.confident:
             return {"reply": msg("not_in_documents", lang), "sources": [], "trace": trace}
         sources_txt = "\n".join(f"[{i + 1}] {h.chunk.citation}: {h.chunk.content}" for i, h in enumerate(found.hits))
         user = (f"CONVERSATION:\n{_history_text(state.get('history') or [])}\n\nQUESTION: {message}\n\nSOURCES:\n{sources_txt}"
                 + reply_language_line(lang))
+        t0 = time.perf_counter()
         reply = _clean_citations(await llm.complete("answer", prompts.ANSWER_SYSTEM, user))
+        answer_ms = round((time.perf_counter() - t0) * 1000)
         cited = {int(n) for n in re.findall(r"\[(\d+)\]", reply)}  # only show sources the answer actually used
         return {
             "reply": reply,
             "sources": [{"n": i + 1, "source": h.chunk.citation} for i, h in enumerate(found.hits) if (i + 1) in cited],
             "evidence": sources_txt,
-            "trace": [*trace, {"step": "answer", "model": llm.name, "cited": sorted(cited)}],
+            "trace": [*trace, {"step": "answer", "ms": answer_ms, "model": llm.name, "cited": sorted(cited)}],
         }
 
     async def account(state: AgentState) -> dict:
@@ -356,7 +379,7 @@ def build_graph(deps: Deps, checkpointer: Any):
         ("limit_exception", limit_exception), ("closure", closure), ("approval_gate", approval_gate), ("advice", advice),
         ("out_of_scope", out_of_scope), ("critic", critic), ("revise", revise), ("finalize", finalize),
     ]:
-        g.add_node(name, fn)
+        g.add_node(name, _timed(fn, llm))
 
     g.add_edge(START, "guard_in")
     g.add_conditional_edges("guard_in", lambda s: "finalize" if s.get("route") == "blocked" else "route", {"finalize": "finalize", "route": "route"})
