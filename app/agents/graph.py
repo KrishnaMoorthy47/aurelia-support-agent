@@ -15,10 +15,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from app.agents import prompts
+from app.i18n import MESSAGES, detect_language, msg, reply_language_line
 from app.llm import LLM
 from app.mcp_server.db import TIER_LIMITS
 from app.rag.retriever import HybridRetriever
-from app.rules import ROUTES, account_intents, check_input, extract_amount, is_advice_request, is_info_question, reply_violations, rule_route
+from app.rules import ROUTES, account_intents, normalize, check_input, extract_amount, is_advice_request, is_info_question, reply_violations, rule_route
 from app.tools import McpToolGateway, ToolError
 
 log = logging.getLogger("aurelia.graph")
@@ -44,6 +45,7 @@ class AgentState(TypedDict, total=False):
     search_query: str
     evidence: str  # what the reply was written from (sources / tool results), so the critic can check grounding
     status: str  # done | pending_approval
+    lang: str  # "en" or "ar", detected from the customer's message
 
 
 @dataclass
@@ -55,27 +57,12 @@ class Deps:
 
 
 
-SAFE_FALLBACK = (
-    "I'm not able to help with that in a way that fits our support policy. "
-    "A colleague can follow up if you'd like - just say 'log a ticket'."
-)
-ADVICE_REFUSAL = (
-    "I can't give investment advice, trading signals, or price predictions, and nobody at Aurelia support can promise "
-    "outcomes - trading CFDs carries a high risk of losing money quickly [1]. I can explain our fees, margin and "
-    "leverage rules, verification, or how a demo account works if that helps."
-)
-OUT_OF_SCOPE = (
-    "I can only help with Aurelia Markets support: fees, margin and leverage, verification, deposits and withdrawals, "
-    "account types, complaints, or the status of your own account. What would you like to know?"
-)
-NEED_SIGN_IN = "Please sign in first so I can look at your own account. (In this demo, pick a demo customer at the top.)"
-BLOCKED_REPLIES = {
-    "prompt_injection": "I can't act on instructions that try to change how I work. I'm happy to help with questions about your account or our policies.",
-    "empty_message": "Could you type your question? I can help with fees, margin, verification, withdrawals, or your own account.",
-    "message_too_long": "That message is too long for me to process. Could you shorten it to the main question?",
-}
-
-
+SAFE_FALLBACK = msg("safe_fallback")
+ADVICE_REFUSAL = msg("advice_refusal")
+OUT_OF_SCOPE = msg("out_of_scope")
+NEED_SIGN_IN = msg("need_sign_in")
+SAFE_FALLBACKS = {msg("safe_fallback", "en"), msg("safe_fallback", "ar")}
+_MESSAGE_KEYS = set(MESSAGES)
 
 
 def _t(state: AgentState, step: str, **info: Any) -> list[dict]:
@@ -102,9 +89,13 @@ def _clean_citations(text: str) -> str:
     return _NATIVE_CITE.sub(lambda m: f"[{m.group(1) or m.group(2)}]", text)
 
 
+_REASON_AR = re.compile(r"(لان|بسبب|لدفع|لسداد|رسوم|ايجار|علاج|الجامعه|دراسه|سفر|شراء|عقار|انتقال|مغادره|اغادر|سبب)")
+
+
 def _has_reason(message: str) -> bool:
     return bool(
         re.search(r"\b(because|for|to pay|reason|since|tuition|invoice|purchase|property|medical|rent|moving|leaving|switching)\b", message.lower())
+        or _REASON_AR.search(normalize(message))
         or len(message.split()) >= 9
     )
 
@@ -115,14 +106,17 @@ def build_graph(deps: Deps, checkpointer: Any):
     llm, retriever, gw = deps.llm, deps.retriever, deps.gateway
 
     async def guard_in(state: AgentState) -> dict:
+        lang = detect_language(state["message"])
         res = check_input(state["message"])
         if res.ok:
-            return {"route": "", "trace": _t(state, "input_guard", ok=True)}
+            return {"route": "", "lang": lang, "trace": _t(state, "input_guard", ok=True, lang=lang)}
+        key = f"blocked_{res.reason}"
         return {
             "route": "blocked",
-            "reply": BLOCKED_REPLIES.get(res.reason, SAFE_FALLBACK),
+            "lang": lang,
+            "reply": msg(key, lang) if key in _MESSAGE_KEYS else msg("safe_fallback", lang),
             "sources": [],
-            "trace": _t(state, "input_guard", ok=False, reason=res.reason),
+            "trace": _t(state, "input_guard", ok=False, reason=res.reason, lang=lang),
         }
 
     async def route(state: AgentState) -> dict:
@@ -140,7 +134,10 @@ def build_graph(deps: Deps, checkpointer: Any):
             try:
                 parsed = _json_from(await llm.complete("route", prompts.ROUTER_SYSTEM, router_input))
                 guess = parsed.get("route")
-                if guess in ROUTES and guess not in SENSITIVE_ROUTES and guess != "advice":
+                # Sending a message to the advice refusal is always safe. The rule floor covers English well, so
+                # there the LLM may not add refusals; for Arabic the regexes are thinner, so the LLM may.
+                may_refuse = state.get("lang") == "ar"
+                if guess in ROUTES and guess not in SENSITIVE_ROUTES and (guess != "advice" or may_refuse):
                     label, by = guess, "llm"
                 search_query = str(parsed.get("search_query") or "")[:200]
             except Exception as exc:
@@ -159,20 +156,21 @@ def build_graph(deps: Deps, checkpointer: Any):
         message = state["message"]
         query = message
         rewrite = state.get("search_query") or ""
+        lang = state.get("lang", "en")
         prev_user = next((h["content"] for h in reversed(state.get("history") or []) if h["role"] == "user"), None)
-        if prev_user and len(message.split()) < 5 and not rewrite:
+        if lang == "ar" and rewrite:
+            query = rewrite  # the documents and the embedding model are English; the router's rewrite is English
+        elif prev_user and len(message.split()) < 5 and not rewrite:
             query = f"{prev_user} {message}"  # without a rewrite, short follow-ups need the previous question
         found = await _to_thread(retriever.search, query, rewrite)
         trace = _t(state, "retrieve", query=query, rewrite=rewrite, confident=found.confident, best_score=round(found.best_vector_score, 3),
                    hits=[{"source": h.chunk.citation, "rrf": round(h.rrf, 4), "vector": None if h.vector_score is None else round(h.vector_score, 3),
                           "bm25_rank": h.bm25_rank, "vector_rank": h.vector_rank} for h in found.hits])
         if not found.confident:
-            return {
-                "reply": "I don't have that in the Aurelia Markets documents I can see. I can log a ticket so a colleague can answer - just say 'log a ticket'.",
-                "sources": [], "trace": trace,
-            }
+            return {"reply": msg("not_in_documents", lang), "sources": [], "trace": trace}
         sources_txt = "\n".join(f"[{i + 1}] {h.chunk.citation}: {h.chunk.content}" for i, h in enumerate(found.hits))
-        user = f"CONVERSATION:\n{_history_text(state.get('history') or [])}\n\nQUESTION: {message}\n\nSOURCES:\n{sources_txt}"
+        user = (f"CONVERSATION:\n{_history_text(state.get('history') or [])}\n\nQUESTION: {message}\n\nSOURCES:\n{sources_txt}"
+                + reply_language_line(lang))
         reply = _clean_citations(await llm.complete("answer", prompts.ANSWER_SYSTEM, user))
         cited = {int(n) for n in re.findall(r"\[(\d+)\]", reply)}  # only show sources the answer actually used
         return {
@@ -183,9 +181,9 @@ def build_graph(deps: Deps, checkpointer: Any):
         }
 
     async def account(state: AgentState) -> dict:
-        cid = state.get("customer_id")
+        cid, lang = state.get("customer_id"), state.get("lang", "en")
         if not cid:
-            return {"reply": NEED_SIGN_IN, "sources": [], "trace": _t(state, "account", error="not_signed_in")}
+            return {"reply": msg("need_sign_in", lang), "sources": [], "trace": _t(state, "account", error="not_signed_in")}
         chosen = await llm.select_tools(state["message"], gw.model_tool_specs)
         how = "llm_tool_calling"
         if not chosen:
@@ -202,51 +200,44 @@ def build_graph(deps: Deps, checkpointer: Any):
                 calls.append({"tool": call["name"], "ok": False, "error": str(exc)})
         trace = _t(state, "tools", selected_by=how, calls=calls, customer=cid)
         if not results:
-            return {"reply": SAFE_FALLBACK, "sources": [], "trace": trace}
-        user = f"QUESTION: {state['message']}\n\nTOOL_RESULTS: {json.dumps(results)}"
+            return {"reply": msg("safe_fallback", lang), "sources": [], "trace": trace}
+        user = f"QUESTION: {state['message']}\n\nTOOL_RESULTS: {json.dumps(results)}" + reply_language_line(lang)
         reply = await llm.complete("account_reply", prompts.ACCOUNT_SYSTEM, user)
         return {"reply": reply, "sources": [], "evidence": json.dumps(results), "trace": [*trace, {"step": "answer", "model": llm.name}]}
 
     async def complaint(state: AgentState) -> dict:
-        cid = state.get("customer_id")
+        cid, lang = state.get("customer_id"), state.get("lang", "en")
         if not cid:
-            return {
-                "reply": "I'm sorry you're having a bad experience. Please sign in so I can log your complaint, or email complaints@aurelia-markets.example and we'll respond within 15 business days.",
-                "sources": [], "trace": _t(state, "complaint", error="not_signed_in"),
-            }
+            return {"reply": msg("complaint_sign_in", lang), "sources": [], "trace": _t(state, "complaint", error="not_signed_in")}
         summary = state["message"][:400]
         res = await gw.call("create_ticket", cid, {"category": "complaint", "summary": summary, "priority": "high"})
         if "error" in res:
-            return {"reply": SAFE_FALLBACK, "sources": [], "trace": _t(state, "complaint", error=res["error"])}
+            return {"reply": msg("safe_fallback", lang), "sources": [], "trace": _t(state, "complaint", error=res["error"])}
         if deps.notify:
             try:
                 await deps.notify({"event": "complaint_logged", "ticket_id": res["ticket_id"], "customer_id": cid, "summary": summary})
             except Exception as exc:
                 log.warning("complaint webhook failed: %s", exc)
         return {
-            "reply": (
-                f"I'm sorry about that. I've logged your complaint as ticket #{res['ticket_id']}. You'll get an acknowledgement within "
-                "2 business days and a final written response within 15 business days [1]. If you're unhappy with the response, you can ask "
-                "for it to be escalated to the Head of Compliance."
-            ),
+            "reply": msg("complaint_logged", lang, ticket_id=res["ticket_id"]),
             "sources": [{"n": 1, "source": "Complaints Policy > What happens next"}],
             "trace": _t(state, "complaint", ticket_id=res["ticket_id"], webhook=bool(deps.notify)),
         }
 
     async def limit_exception(state: AgentState) -> dict:
-        cid = state.get("customer_id")
+        cid, lang = state.get("customer_id"), state.get("lang", "en")
         if not cid:
-            return {"reply": NEED_SIGN_IN, "sources": [], "trace": _t(state, "limit_exception", error="not_signed_in")}
+            return {"reply": msg("need_sign_in", lang), "sources": [], "trace": _t(state, "limit_exception", error="not_signed_in")}
         slot = dict(state.get("slot") or {"intent": "limit_exception", "amount": None, "reason": None})
-        msg = state["message"]
-        slot["amount"] = slot["amount"] or extract_amount(msg)
-        if not slot["reason"] and _has_reason(msg):
-            slot["reason"] = msg[:300]
+        text = state["message"]
+        slot["amount"] = slot["amount"] or extract_amount(text)
+        if not slot["reason"] and _has_reason(text):
+            slot["reason"] = text[:300]
         if not slot["amount"]:
-            return {"reply": "Happy to submit that for review. What daily withdrawal limit (in USD) would you like?", "slot": slot, "sources": [],
+            return {"reply": msg("limit_ask_amount", lang), "slot": slot, "sources": [],
                     "trace": _t(state, "limit_exception", waiting_for="amount")}
         if not slot["reason"]:
-            return {"reply": "Thanks. What is the reason for the higher limit? A compliance reviewer will read it.", "slot": slot, "sources": [],
+            return {"reply": msg("limit_ask_reason", lang), "slot": slot, "sources": [],
                     "trace": _t(state, "limit_exception", waiting_for="reason")}
 
         limits = await gw.call("get_withdrawal_limits", cid)
@@ -255,35 +246,36 @@ def build_graph(deps: Deps, checkpointer: Any):
         amount = int(slot["amount"])
         base = _t(state, "policy_precheck", current_limit=current, requested=amount, ceiling=ceiling)
         if ceiling is None or current is None or amount <= current or amount > ceiling:
-            tip = f"it must be above your current {current} USD" + (f" and no higher than {ceiling} USD (the next verification tier's limit)" if ceiling else "")
+            ceiling_part = msg("limit_ceiling_part", lang, ceiling=ceiling) if ceiling else ""
             return {
-                "reply": f"I can't send that request for review: {tip} [1]. Completing the next level of verification is usually the faster route - I can tell you what's needed.",
+                "reply": msg("limit_not_eligible", lang, current=current, ceiling_part=ceiling_part),
                 "sources": [{"n": 1, "source": "Deposits and Withdrawals > Withdrawal limits and exception requests"}],
                 "slot": None, "trace": base,
             }
         action = {
-            "type": "limit_exception", "customer_id": cid, "requested_daily_limit": amount, "reason": slot["reason"],
+            "type": "limit_exception", "customer_id": cid, "requested_daily_limit": amount, "reason": slot["reason"], "lang": lang,
             "summary": f"Raise daily withdrawal limit from {current} to {amount} USD for {cid}. Reason: {slot['reason']}",
         }
         return {"slot": None, "pending_action": action, "trace": [*base, {"step": "needs_approval", "action": action["type"]}]}
 
     async def closure(state: AgentState) -> dict:
-        cid = state.get("customer_id")
+        cid, lang = state.get("customer_id"), state.get("lang", "en")
         if not cid:
-            return {"reply": NEED_SIGN_IN, "sources": [], "trace": _t(state, "account_closure", error="not_signed_in")}
+            return {"reply": msg("need_sign_in", lang), "sources": [], "trace": _t(state, "account_closure", error="not_signed_in")}
         slot = dict(state.get("slot") or {"intent": "account_closure", "reason": None})
-        msg = state["message"]
-        if not slot.get("reason") and _has_reason(msg) and not re.fullmatch(r"(please )?(close|delete|terminate) (my )?account\.?", msg.lower().strip()):
-            slot["reason"] = msg[:300]
+        text = state["message"]
+        if not slot.get("reason") and _has_reason(text) and not re.fullmatch(r"(please )?(close|delete|terminate) (my )?account\.?", text.lower().strip()):
+            slot["reason"] = text[:300]
         if not slot.get("reason"):
-            return {"reply": "I can pass a closure request to our compliance team. Could you tell me briefly why you'd like to close the account?",
+            return {"reply": msg("closure_ask_reason", lang),
                     "slot": slot, "sources": [], "trace": _t(state, "account_closure", waiting_for="reason")}
         summary = await gw.call("get_account_summary", cid)
         if summary.get("has_open_positions"):
-            return {"reply": "You still have open positions. Please close them (and withdraw any balance) first, then ask me again [1].",
+            return {"reply": msg("closure_open_positions", lang),
                     "sources": [{"n": 1, "source": "Deposits and Withdrawals > Account closure"}], "slot": None,
                     "trace": _t(state, "account_closure", blocked="open_positions")}
-        action = {"type": "account_closure", "customer_id": cid, "reason": slot["reason"], "summary": f"Close account for {cid}. Reason: {slot['reason']}"}
+        action = {"type": "account_closure", "customer_id": cid, "reason": slot["reason"], "lang": lang,
+                  "summary": f"Close account for {cid}. Reason: {slot['reason']}"}
         return {"slot": None, "pending_action": action, "trace": _t(state, "needs_approval", action="account_closure")}
 
     def needs_human(state: AgentState) -> str:
@@ -296,30 +288,30 @@ def build_graph(deps: Deps, checkpointer: Any):
         approved = bool(decision.get("approved"))
         reviewer = (decision.get("reviewer") or "").strip() or "unknown-reviewer"
         trace = _t(state, "human_decision", approved=approved, reviewer=reviewer, note=decision.get("note", ""))
+        lang = action.get("lang", "en")
         if not approved:
-            note = decision.get("note") or "it didn't meet our policy requirements at this time"
-            return {"reply": f"A compliance reviewer looked at your request and could not approve it: {note}. You can ask me about the verification steps that would raise your limits.",
-                    "sources": [], "pending_action": None, "trace": trace}
+            note = decision.get("note") or msg("review_declined_default_note", lang)
+            return {"reply": msg("review_declined", lang, note=note), "sources": [], "pending_action": None, "trace": trace}
         cid = action["customer_id"]
         if action["type"] == "limit_exception":
             res = await gw.call("submit_limit_exception_request", cid,
                                 {"requested_daily_limit": action["requested_daily_limit"], "reason": action["reason"]},
                                 approved_by=reviewer, privileged=True)
             ok = res.get("status") == "granted"
-            reply = (f"Good news - a compliance reviewer approved your request. Your daily withdrawal limit is now {res['new_daily_limit_usd']} USD."
-                     if ok else f"The reviewer approved it, but the system could not apply it ({res.get('error', 'unknown error')}). I've kept your request on file.")
+            reply = (msg("limit_granted", lang, amount=res["new_daily_limit_usd"])
+                     if ok else msg("limit_apply_failed", lang, error=res.get("error", "unknown error")))
         else:
             res = await gw.call("submit_account_closure_request", cid, {"reason": action["reason"]}, approved_by=reviewer, privileged=True)
             ok = res.get("status") == "closure_pending"
-            reply = ("A compliance reviewer approved your request. Your account is now pending closure; you'll receive a confirmation email."
-                     if ok else f"The reviewer approved it, but it could not be applied ({res.get('error', 'unknown error')}).")
+            reply = (msg("closure_approved", lang) if ok
+                     else msg("closure_apply_failed", lang, error=res.get("error", "unknown error")))
         return {"reply": reply, "sources": [], "pending_action": None, "trace": [*trace, {"step": "tool_executed", "tool": action["type"], "ok": ok}]}
 
     async def advice(state: AgentState) -> dict:
-        return {"reply": ADVICE_REFUSAL, "sources": [{"n": 1, "source": "Risk Disclosure > No investment advice"}], "trace": _t(state, "advice_refusal")}
+        return {"reply": msg("advice_refusal", state.get("lang", "en")), "sources": [{"n": 1, "source": "Risk Disclosure > No investment advice"}], "trace": _t(state, "advice_refusal")}
 
     async def out_of_scope(state: AgentState) -> dict:
-        return {"reply": OUT_OF_SCOPE, "sources": [], "trace": _t(state, "out_of_scope")}
+        return {"reply": msg("out_of_scope", state.get("lang", "en")), "sources": [], "trace": _t(state, "out_of_scope")}
 
     async def critic(state: AgentState) -> dict:
         reply = state["reply"]
@@ -341,16 +333,18 @@ def build_graph(deps: Deps, checkpointer: Any):
 
     async def revise(state: AgentState) -> dict:
         n = state.get("revisions", 0)
+        lang = state.get("lang", "en")
         if n >= 1:  # one rewrite attempt, then a safe fallback - never loop forever
-            return {"reply": SAFE_FALLBACK, "sources": [], "violations": [], "revisions": n + 1, "trace": _t(state, "fallback", reason="still_violating_after_revision")}
+            return {"reply": msg("safe_fallback", lang), "sources": [], "violations": [], "revisions": n + 1, "trace": _t(state, "fallback", reason="still_violating_after_revision")}
         problems = ", ".join(state["violations"]) + (f" ({state['critic_reason']})" if state.get("critic_reason") else "")
         evidence = state.get("evidence") or "(none)"
         rewritten = _clean_citations(await llm.complete(
-            "rewrite", prompts.REWRITE_SYSTEM, f"PROBLEMS: {problems}\n\nEVIDENCE:\n{evidence}\n\nDRAFT:\n{state['reply']}"))
+            "rewrite", prompts.REWRITE_SYSTEM,
+            f"PROBLEMS: {problems}\n\nEVIDENCE:\n{evidence}\n\nDRAFT:\n{state['reply']}" + reply_language_line(lang)))
         return {"reply": rewritten, "revisions": n + 1, "trace": _t(state, "revise", problems=state["violations"])}
 
     def after_revise(state: AgentState) -> str:
-        return "finalize" if state.get("reply") == SAFE_FALLBACK else "critic"
+        return "finalize" if state.get("reply") in SAFE_FALLBACKS else "critic"
 
     async def finalize(state: AgentState) -> dict:
         history = [*(state.get("history") or []), {"role": "user", "content": state["message"]}, {"role": "assistant", "content": state["reply"]}]

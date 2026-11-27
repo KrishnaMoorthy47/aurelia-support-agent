@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from app.agents.graph import Deps, build_graph
 from app.audit import AuditWriter, body_to_json, make_sink
 from app.config import get_settings
+from app.i18n import detect_language, msg
 from app.llm import get_llm
 from app.mcp_server import db as mock_db
 from app.mcp_server.db import SEED_CUSTOMERS
@@ -45,10 +46,6 @@ def _reason(exc: Exception) -> str:
 STATIC_DIR = Path(__file__).parent / "static"
 EVAL_REPORT = Path(__file__).resolve().parents[1] / "eval" / "report.json"
 
-HOLDING_REPLY = (
-    "Thanks - I've sent your request to a compliance reviewer. They'll review it and you'll see the decision here. "
-    "(This usually takes up to 2 business days.)"
-)
 
 
 class ChatRequest(BaseModel):
@@ -248,7 +245,7 @@ def create_app(*, llm=None, retriever=None, mock_db_path: str | None = None) -> 
 
         snapshot = await graph.aget_state(cfg)
         if snapshot.next:
-            return {"session_id": req.session_id, "status": "pending_approval", "reply": "Your earlier request is still with a compliance reviewer - I'll show the decision as soon as it's made.",
+            return {"session_id": req.session_id, "status": "pending_approval", "reply": msg("still_pending", detect_language(req.message)),
                     "approval_id": req.session_id, "route": None, "sources": [], "trace": []}
 
         result = await graph.ainvoke(
@@ -259,7 +256,7 @@ def create_app(*, llm=None, retriever=None, mock_db_path: str | None = None) -> 
         if interrupts:
             action = interrupts[0].value["action"]
             request.app.state.pending[req.session_id] = {"approval_id": req.session_id, "customer_id": action["customer_id"], "action": action}
-            return {"session_id": req.session_id, "status": "pending_approval", "reply": HOLDING_REPLY, "approval_id": req.session_id, **public(result)}
+            return {"session_id": req.session_id, "status": "pending_approval", "reply": msg("holding", result.get("lang", "en")), "approval_id": req.session_id, **public(result)}
         return {"session_id": req.session_id, "status": "done", "reply": result["reply"], **public(result)}
 
     @app.get("/sessions/{session_id}", dependencies=[Depends(need_api_key)])
