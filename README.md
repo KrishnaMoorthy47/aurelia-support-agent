@@ -1,6 +1,6 @@
 # Aurelia Support Agent
 
-Customer-support agent for a fictional CFD broker. It answers policy questions from the broker's documents with citations, reads the signed-in customer's account through an MCP server, refuses investment advice, and holds account changes for human approval.
+Customer-support agent for a fictional CFD broker serving UAE clients. It answers policy questions from the broker's documents with citations, in English or Arabic, reads the signed-in customer's account through an MCP server, refuses investment advice, and holds account changes for human approval.
 
 **Live demo:** https://aurelia-support-agent.onrender.com (free instance; the first request after idling takes about a minute)
 
@@ -18,6 +18,8 @@ All company data is invented. Nothing here is financial advice.
 | Prompt injection | Blocked before any model call |
 | Complaint | Ticket logged immediately; webhook fired |
 | Limit increase / account closure | Details collected → policy check → reviewer approval → applied over MCP |
+| UAE question ("Can I verify with my Emirates ID?") | Answered from the UAE documents: regulator, client money, onboarding, data privacy |
+| Arabic message ("ما هي رسوم السحب؟") | Same pipeline; searched in English, answered in Arabic with citations |
 
 ## Architecture
 
@@ -39,14 +41,16 @@ All company data is invented. Nothing here is financial advice.
 
 - Safety decisions (injection, advice, account access, approvals) are plain code; the model only writes text.
 - The critic checks every reply with rules and a small model that sees the same evidence the reply was written from. A failing draft gets one rewrite, then a safe fallback.
+- Fixed replies (refusals, approval messages, holding replies) are written by hand in English and Arabic (`app/i18n.py`), so they read the same every time.
 - Models: `qwen/qwen3.8-27b` for routing and review, `openai/gpt-oss-120b` for answers. Switching to Claude or OpenAI is a config change (`LLM_PROVIDER`).
 
 ## Retrieval
 
-- One chunk per document section (37 chunks), embedded with `BAAI/bge-small-en-v1.5` (384-dim, local ONNX via fastembed) and stored in pgvector.
+- One chunk per document section (57 chunks across 12 documents), embedded with `BAAI/bge-small-en-v1.5` (384-dim, local ONNX via fastembed) and stored in pgvector.
 - The router also returns `search_query`, the question in the documents' vocabulary. This costs no extra call.
 - Reciprocal Rank Fusion over vector search on the original question, vector search on the rewrite, and BM25 on the rewrite.
 - The answer step runs only if the best cosine similarity is at least 0.55.
+- On startup only new or edited sections are embedded, and removed sections are deleted, so editing a document never needs a manual re-ingest.
 
 Benchmark (`eval/retrieval_bench.py`, 35 labelled questions):
 
@@ -59,15 +63,36 @@ Benchmark (`eval/retrieval_bench.py`, 35 labelled questions):
 
 BM25 on a customer's own wording adds noise; on the rewritten query it adds precision.
 
+## UAE knowledge base
+
+Three documents describe how a UAE-facing broker works (`app/kb/docs/09`–`11`):
+
+| Document | Covers |
+|---|---|
+| UAE Regulation and Client Money | Capital Market Authority (CMA, formerly SCA, renamed 1 January 2026), DIFC/DFSA and ADGM/FSRA, segregated client money, retail vs professional clients, AED deposits |
+| UAE Account Opening and Verification | Emirates ID and UAE Pass, accepted proofs of address, Arabic name spellings, source of funds under Federal Decree-Law No. 10 of 2025 (AML) |
+| UAE Risk Warning, Data Privacy and Language | Retail loss percentage, UAE Personal Data Protection Law (Federal Decree-Law No. 45 of 2021), record keeping, Arabic support, complaints to the CMA |
+
+The regulators and laws are real; Aurelia's licence, figures and policies are invented.
+
+## Arabic
+
+- A message is treated as Arabic when most of its letters are Arabic.
+- The router writes the English search query, so Arabic questions are matched against the English documents with the same retrieval. The answer, account and rewrite steps are told to reply in Arabic and keep numbers, currency codes and citations unchanged.
+- Rule-based checks cover Arabic too: prompt injection, advice requests, limit and closure requests, complaints, and the reply check for guarantees, recommendations and price predictions. Text is normalised first (vowel marks, alef forms, taa marbuta, Arabic-Indic digits).
+- The English rules cover advice requests well, so the model may not add refusals there. For Arabic the rules are thinner, so the model may send a message to the advice refusal, which is always safe. It still can't start a limit change or closure.
+
 ## Evaluation
 
-`eval/run_eval.py` runs 49 scripted conversations through the graph and scores routing, facts, citations, compliance, the approval flow, latency and tokens.
+`eval/run_eval.py` runs 65 scripted conversations through the graph and scores routing, facts, citations, compliance, the approval flow, latency and tokens.
 
 | Run | Passed |
 |---|---|
 | Initial | 34 / 49 |
 | Critic grounded on evidence, citation format fixed | 49 / 49 |
 | Supabase + multi-query retrieval | 49 / 49, 0 compliance violations, ~1.2 s median |
+
+The runs above cover the original 49 conversations. Sixteen UAE and Arabic conversations (categories `uae` and `arabic`) were added afterwards: `python eval/run_eval.py --only uae` and `--only arabic`.
 
 ## Run locally
 
@@ -84,7 +109,7 @@ Demo customers: `C-1001` verified with open positions · `C-1002` proof of addre
 
 ## Supabase
 
-Set `DATABASE_URL` to the project's **Session pooler** connection string and `VECTOR_STORE=pgvector`. On startup the app applies `supabase/schema.sql` (idempotent) and embeds the documents if the table is empty.
+Set `DATABASE_URL` to the project's **Session pooler** connection string and `VECTOR_STORE=pgvector`. On startup the app applies `supabase/schema.sql` (idempotent) and embeds any document section that is new or has changed.
 
 | Table | Contents |
 |---|---|
@@ -96,7 +121,7 @@ Both tables have RLS enabled with no policies, so only the app's database role c
 ## Tests
 
 ```bash
-pytest                                     # 97 tests, offline
+pytest                                     # 147 tests, offline
 python eval/run_eval.py                    # conversation eval (uses Groq)
 python eval/retrieval_bench.py --rewrite   # retrieval benchmark
 ```
@@ -112,7 +137,8 @@ app/
   rag/            chunking, embeddings, vector stores, retriever
   mcp_server/     MCP server and mock back-office data
   tools.py        MCP client gateway
-  rules.py        guardrails and routing rules
+  rules.py        guardrails and routing rules (English and Arabic)
+  i18n.py         language detection and fixed replies in English and Arabic
   audit.py        request log
   llm.py          model backends
   static/         demo UI
